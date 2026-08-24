@@ -170,7 +170,7 @@ The goal is not only to report a score, but to understand **where the model work
 **Official check-ins:** During our biweekly 45-minute AI Studio Lab Section meeting block (2nd and 4th week of every month)
 
  **Other ways to reach out to me with questions:** 
-* [Discord Channel](https://discord.gg/7XC4pB5deF)
+* Team Discord Channel
 * hetal.jetani@accenture.com, hetal0826@gmail.com (Google Meet)
 * [Mobile connect, WhatsApp]
 * [Note: I will aim to respond within 48 hours. Please reach out to your AI Studio Coach with urgent questions.]
