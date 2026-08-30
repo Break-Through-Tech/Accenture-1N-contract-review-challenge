@@ -1,1 +1,19 @@
+# Core EDA / modeling stack for the CUAD multi-label classification project.
+# Developed on Python 3.11 (Intel macOS). Requires Python >= 3.11.
+# For a byte-identical environment on Python 3.11, use requirements-lock.txt instead.
 
+numpy>=1.26,<2.0        # kept <2.0 for torch 2.2.x compatibility
+pandas>=2.1
+matplotlib>=3.8
+seaborn>=0.13
+scikit-learn>=1.4
+tqdm>=4.66
+ipykernel>=6.29
+
+# PyTorch: the line below installs a CPU build on macOS/Windows and the CUDA
+# build on Linux (which bundles ~2.5 GB of nvidia-* libraries, even on a
+# machine without a GPU). For a CPU-only Linux install, run this first:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# For a specific CUDA / ROCm build see: https://pytorch.org/get-started/locally/
+# Note: torch 2.2.x is the last series with Intel-Mac (x86_64) wheels.
+torch>=2.2,<2.9
