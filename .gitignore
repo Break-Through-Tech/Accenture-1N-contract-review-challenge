@@ -7,3 +7,5 @@ __pycache__/
 
 # macOS
 .DS_Store
+notebooks/alec-eda-01.ipynb
+requirements-lock.txt
