@@ -7,3 +7,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Scratch / personal planning files (not for the repo)
+plan.md
