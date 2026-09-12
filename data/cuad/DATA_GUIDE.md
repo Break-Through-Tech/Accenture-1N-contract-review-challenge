@@ -5,7 +5,7 @@ Dataset (CUAD) v1 in this repository. CUAD is a SQuAD-style question-answer
 dataset: a contract and a category-specific question are paired with zero or more
 exact evidence spans. A category question is not itself an answer span.
 
-## File map
+## Data File map 
 
 | File | Use it for |
 | --- | --- |
@@ -22,38 +22,35 @@ flowchart LR
   A[cuad-v1.zip release archive] --> B[CUADv1.json full release]
   B --> C[train_separate_questions.json — 408 contracts]
   B --> D[test.json — 102 contracts]
-  E[category_descriptions.csv — 41 category definitions] --> F[category questions and labels]
+  E[category_descriptions.csv — 41 category definitions] --> F[category questions (nlp) and labels]
   B --> F
   G[schema_overview.json] --> H[implementation reference]
 ```
 
-All three JSON files use the same schema. The official contract-level splits are
-non-overlapping: 408 train + 102 test = 510 contracts, and their union reconstructs
-the full file. Keep this split for comparable evaluation; do not move a contract
-between split files.
+All three JSON files use the same schema. The official contract level splits are
+non overlapping: (80/20 split) 408 train + 102 test = 510 contracts.
 
 ## JSON structure
-
+*Descriptions in the table below*
 ```text
 file
 ├── version
-└── data[]
+└── <array>data[]
     └── paragraphs[]
         ├── context
-        └── qas[]
+        └── <array>qas[]
             ├── id, question, is_impossible
-            └── answers[]
+            └── <array>answers[]
                 └── text, answer_start
 ```
-
 In compact form: `file → data[] → paragraphs[] → qas[] → answers[]`.
-`paragraphs[]` is the text-and-annotation container; in this release each contract
-has one long context entry. `title` is the contract-level identifier, so use it to
+`paragraphs[]` is where the contract lives (text-and-annotation container); in this release each contract
+has one long context entry. `title` is the contract-level id, so use it to
 compare split membership.
 
 | Field | Type | Meaning | Example |
 | --- | --- | --- | --- |
-| `version` | string | Dataset format/version identifier. | `aok_v1.0` |
+| `version` | string | Dataset format/version id. | `aok_v1.0` |
 | `title` | string | Contract identifier/title at `data[]`. | `LIMEENERGYCO_09_09_1999-EX-10-DISTRIBUTOR AGREEMENT` |
 | `context` | string | Full contract text containing the evidence. | `This Agreement is made...` |
 | `id` | string | Q&A identifier combining contract title and category. | `<title>__Effective Date` |
@@ -71,7 +68,9 @@ context[answer_start : answer_start + len(text)] == text
 An empty `answers` array is therefore a no-evidence label for that Q&A record, not
 an empty contract or a missing category definition. A model may use the category
 question to classify whether a clause is present; evidence extraction then locates
-the supporting text. CUAD provides the latter annotations, not project risk scores.
+the supporting text. CUAD provides the latter annotations, not project risk scores for triage.
+
+### RESUME HERE
 
 ## Category metadata
 
