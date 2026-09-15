@@ -1,0 +1,126 @@
+{
+  "dataset": {
+    "name": "CUAD v1 — Contract Understanding Atticus Dataset",
+    "purpose": "Question-answer annotations for finding contract-review clauses and their supporting text.",
+    "format": "SQuAD-style JSON",
+    "statistics": {
+      "contracts": 510,
+      "clause_categories": 41,
+      "annotated_answer_spans": 13823,
+      "question_answer_records": 20910,
+      "official_splits": {
+        "train_separate_questions.json": 408,
+        "test.json": 102
+      }
+    }
+  },
+  "layers": {
+    "file": {
+      "keys": {
+        "version": {
+          "value_type": "string",
+          "example": "aok_v1.0",
+          "description": "Dataset format/version identifier."
+        },
+        "data": {
+          "value_type": "array<contract>",
+          "description": "The collection of commercial-contract records."
+        }
+      }
+    },
+    "contract": {
+      "path": "data[]",
+      "keys": {
+        "title": {
+          "value_type": "string",
+          "example": "LIMEENERGYCO_09_09_1999-EX-10-DISTRIBUTOR AGREEMENT",
+          "description": "Contract identifier/title; use it as the document-level ID."
+        },
+        "paragraphs": {
+          "value_type": "array<paragraph>",
+          "description": "Text-and-annotation container. In this release, each contract has one long context entry."
+        }
+      }
+    },
+    "paragraph": {
+      "path": "data[].paragraphs[]",
+      "keys": {
+        "context": {
+          "value_type": "string",
+          "example": "This Agreement is made and entered into...",
+          "description": "Full contract text in which labeled evidence is located."
+        },
+        "qas": {
+          "value_type": "array<question_answer_annotation>",
+          "description": "One review-category question and its evidence label(s), generally one record per category."
+        }
+      }
+    },
+    "question_answer_annotation": {
+      "path": "data[].paragraphs[].qas[]",
+      "keys": {
+        "id": {
+          "value_type": "string",
+          "example": "<contract_title>__Document Name",
+          "description": "Unique annotation ID, combining a contract identifier and clause category."
+        },
+        "question": {
+          "value_type": "string",
+          "example": "Highlight the parts (if any) of this contract related to \\\"Document Name\\\"...",
+          "description": "Natural-language prompt naming the clause category and defining what to find."
+        },
+        "is_impossible": {
+          "value_type": "boolean",
+          "example": false,
+          "description": "false means the category has at least one labeled evidence span; true means no answer was annotated."
+        },
+        "answers": {
+          "value_type": "array<answer_span>",
+          "description": "Zero or more evidence spans. Empty when is_impossible is true; multiple spans may support the same category."
+        }
+      }
+    },
+    "answer_span": {
+      "path": "data[].paragraphs[].qas[].answers[]",
+      "keys": {
+        "text": {
+          "value_type": "string",
+          "example": "DISTRIBUTOR AGREEMENT",
+          "description": "Exact contract text selected as evidence."
+        },
+        "answer_start": {
+          "value_type": "integer",
+          "example": 44,
+          "description": "Zero-based character offset where text begins inside its parent context string."
+        }
+      }
+    },
+    "category_metadata_csv": {
+      "file": "category_descriptions.csv",
+      "keys": {
+        "Category (incl. context and answer)": {
+          "value_type": "string",
+          "description": "The clause label used in the questions/annotation IDs."
+        },
+        "Description": {
+          "value_type": "string",
+          "description": "Plain-language definition of the clause category."
+        },
+        "Answer Format": {
+          "value_type": "string",
+          "description": "Expected form of the extracted answer, such as a date, entity name, or Yes/No."
+        },
+        "Group": {
+          "value_type": "string",
+          "description": "Optional category grouping code supplied by CUAD."
+        }
+      }
+    }
+  },
+  "tree": "file → data[] (contract) → paragraphs[] → { context, qas[] } → { id, question, is_impossible, answers[] } → { text, answer_start }",
+  "modeling_interpretation": {
+    "input": "context (or a chunk of it) plus a target clause category/question",
+    "target": "Whether the category appears and, when available, its answer-span evidence",
+    "important_note": "CUAD supplies clause evidence, not Low/Medium/High risk labels; risk labels must be created by a separate scoring rule or review process."
+  }
+}
