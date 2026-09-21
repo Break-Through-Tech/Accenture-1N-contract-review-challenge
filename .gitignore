@@ -7,3 +7,4 @@ __pycache__/
 
 # macOS
 .DS_Store
+.venv311/
