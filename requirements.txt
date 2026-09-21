@@ -9,10 +9,6 @@ seaborn>=0.13
 scikit-learn>=1.4
 tqdm>=4.66
 ipykernel>=6.29
-pyarrow>=14.0        # needed for DataFrame.to_parquet in main_pipeline.ipynb's export step
-tiktoken>=0.5        # token counting for chunking_util.py, main_pipeline.ipynb, alec-eda-01.ipynb
-chunking_evaluation @ git+https://github.com/brandonstarxel/chunking_evaluation.git  # chunkers used in chunking_util.py, main_pipeline.ipynb, alec-eda-01.ipynb
-chromadb>=0.5        # local embedding function for the semantic chunkers in alec-eda-01.ipynb
 
 # PyTorch: the line below installs a CPU build on macOS/Windows and the CUDA
 # build on Linux (which bundles ~2.5 GB of nvidia-* libraries, even on a
