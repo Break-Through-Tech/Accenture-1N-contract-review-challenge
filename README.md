@@ -12,6 +12,7 @@
 | Josiah De Leon | @josweon         |              |
 | Alec Borque    | @AlecDerinBorque |              |
 | Dunni DK.      | @dunni14.        |              |
+| Isabella W     | @isa9955         |              |
 
 ---
 
