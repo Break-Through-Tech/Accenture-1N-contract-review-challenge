@@ -240,6 +240,39 @@ def classify_spans(clean_df: pd.DataFrame, chunks_df: pd.DataFrame, token_len_fn
     return pd.DataFrame(results)
 
 
+# --- truncation check: every chunk has to fit the model input as-is ---
+def check_no_truncation(chunks_df: pd.DataFrame, tokenizer, max_length: int = MAX_LENGTH,
+                        window_size: int = WINDOW_SIZE) -> pd.Series:
+    """Tokenize every chunk exactly the way training will ([CLS]/[SEP] on, no truncation) and
+    raise if any comes out longer than max_length. If one did, the model would silently cut its
+    tail off, and a chunk labeled positive could lose the evidence that made it positive.
+
+    The chunker only *estimates* chunk size (it sums per-piece token counts), so this re-measures
+    the real thing. It also reports how far chunks drift past window_size, i.e. how much of
+    SAFETY_MARGIN actually gets used. Returns the per-chunk model token counts."""
+    print(f"\n--- checking every chunk fits the model input ({max_length} tokens incl. special tokens) ---")
+    valid_chunks = chunks_df[chunks_df["chunk_start"] >= 0]
+    encoded = tokenizer(valid_chunks["chunk_text"].tolist(), add_special_tokens=True, truncation=False)
+    model_tokens = pd.Series([len(ids) for ids in encoded["input_ids"]], index=valid_chunks.index)
+
+    n_special = len(tokenizer("")["input_ids"])
+    drift = model_tokens - n_special - window_size                   # > 0 means the chunker overshot its window
+    print(f"model tokens per chunk: median={model_tokens.median():.0f}  p99={model_tokens.quantile(0.99):.0f}  "
+          f"max={model_tokens.max()}  (limit {max_length})")
+    print(f"chunks over the {window_size}-token window (chunker estimate drift): {int((drift > 0).sum())}, "
+          f"worst overshoot {max(int(drift.max()), 0)} tokens, "
+          f"margin left at worst {max_length - int(model_tokens.max())} tokens")
+
+    over = valid_chunks.loc[model_tokens > max_length, "chunk_id"]
+    print(f"checked {len(valid_chunks)} chunks, {len(over)} would be truncated")
+    if len(over):
+        raise RuntimeError(
+            f"Truncation check FAILED -- {len(over)} chunks exceed {max_length} model tokens and would lose "
+            f"their tail at training time: {over.tolist()[:5]}. Increase SAFETY_MARGIN or lower WINDOW_SIZE."
+        )
+    return model_tokens
+
+
 # --- sanity checks: make sure the offset math actually holds before we trust the report ---
 def sanity_check_offsets(clean_df, chunks_df, spans_df, n=N_SANITY_CHECK_SAMPLES, seed=RANDOM_SEED):
     rng = random.Random(seed)
@@ -347,6 +380,9 @@ def main():
     if n_offset_fail:
         print(f"WARNING: {n_offset_fail} chunks could not be located in their contract's text "
               f"and were excluded from evidence matching below.")
+
+    # before any evidence numbers get reported: they only mean something if the model sees every chunk whole
+    check_no_truncation(chunks_df, load_tokenizer(MODEL_NAME))
 
     spans_df = classify_spans(clean_df, chunks_df, token_len, WINDOW_SIZE)
     n_no_coverage = int((spans_df["bucket"] == "NO_COVERAGE").sum())
