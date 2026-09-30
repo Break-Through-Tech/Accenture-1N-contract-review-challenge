@@ -14,6 +14,8 @@ tiktoken>=0.5        # token counting for chunking_util.py, main_pipeline.ipynb,
 chunking_evaluation @ git+https://github.com/brandonstarxel/chunking_evaluation.git  # chunkers used in chunking_util.py, main_pipeline.ipynb, alec-eda-01.ipynb
 backoff>=2.2          # imported by chunking_evaluation but not declared in its own dependencies
 chromadb>=0.5        # local embedding function for the semantic chunkers in alec-eda-01.ipynb
+transformers>=4.48   # ModernBERT (answerdotai/ModernBERT-base) tokenizer for chunking + model; first release with ModernBERT
+accelerate>=0.26     # required by transformers' Trainer for fine-tuning
 
 # PyTorch: the line below installs a CPU build on macOS/Windows and the CUDA
 # build on Linux (which bundles ~2.5 GB of nvidia-* libraries, even on a
