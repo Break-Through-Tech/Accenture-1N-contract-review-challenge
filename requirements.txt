@@ -10,7 +10,7 @@ scikit-learn>=1.4
 tqdm>=4.66
 ipykernel>=6.29
 pyarrow>=14.0        # needed for DataFrame.to_parquet in main_pipeline.ipynb's export step
-tiktoken>=0.5        # token counting for chunking_util.py, main_pipeline.ipynb, alec-eda-01.ipynb
+tiktoken>=0.5        # old cl100k token counting: tokenizer_gap_check.py, main_pipeline.ipynb (chunking_util.py now uses the ModernBERT tokenizer)
 # Windows: building chunking_evaluation can fail with "The filename or extension is too long"
 # (it ships deeply nested data files). Either enable Windows long paths, or clone it to a short
 # path first and install from there:
