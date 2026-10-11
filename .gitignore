@@ -5,6 +5,9 @@ __pycache__/
 .ipynb_checkpoints/
 .env
 
+.vscode
+CLAUDE.md
+
 # macOS
 .DS_Store
 .venv311/

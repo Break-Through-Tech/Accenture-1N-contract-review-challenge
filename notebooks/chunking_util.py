@@ -1,36 +1,46 @@
 """
-Evidence-preservation audit for the CUAD chunking pipeline.
+Chunking utilities + evidence-preservation audit for the CUAD pipeline.
 
-The chunking config below is already settled (see alec-eda-01.ipynb for how we
-picked the chunker, and chunk_size_sweep.py / check_768_config.py for the
-window-size sweep that took us from 512 to 768 tokens). At 768 tokens we get
-0 OVERSIZED evidence spans (down from 6 at 512), preservation climbs to 99.7%
-(from 99.1%), and we end up with 38% fewer chunks (8,031 vs 13,075) than the
-512/128 setup. So this script isn't re-litigating chunker choice — it just
-checks how well that fixed config preserves labeled evidence spans across all
-408 CUAD training contracts, broken down by category.
+Chunk size is measured with the *transformer's own tokenizer* (ModernBERT-base),
+so a chunk that fits the chunker's window also fits the model's input without
+getting truncated. An earlier version sized chunks with tiktoken's cl100k_base
+at 768/192 (picked from a 512 vs 768 window sweep: 0 OVERSIZED spans, 99.7% of
+evidence spans PRESERVED, 8,031 chunks). But ModernBERT tokenizes the same text
+~4% longer at the median and up to ~18% longer at p99, so 27% of those chunks
+ran past a 768-token model input and 23 positive chunk labels had all their
+evidence in the cut-off tail -- see tokenizer_gap_check.py, and
+evidence_preservation_by_category_cl100k_768.csv for that setup's audit.
+
+Running this file as a script re-checks how well the current config preserves
+labeled evidence spans across all 408 CUAD training contracts, by category.
 
 Run it from notebooks/ (same convention as the rest of the repo, since we
 import cuad_cleaning.py as a sibling module rather than a package):
 
     cd notebooks
-    python evidence_preservation_audit.py
+    python chunking_util.py
 """
 
 import json
 import random
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
-import tiktoken
 from chunking_evaluation.chunking import RecursiveTokenChunker
+from transformers import AutoTokenizer
 
 from cuad_cleaning import clean_text_with_map, build_reverse_map, relocate_answer
 
-# --- config: this is the settled chunking choice, all in one place ---
-WINDOW_SIZE = 768
-OVERLAP = 192
-ENCODING_NAME = "cl100k_base"
+# --- config: chunk size comes from the model we're going to feed the chunks to ---
+MODEL_NAME = "answerdotai/ModernBERT-base"
+MAX_LENGTH = 768                               # full model input, [CLS]/[SEP] included
+N_SPECIAL_TOKENS = 2                           # ModernBERT wraps every input as [CLS] ... [SEP]
+SAFETY_MARGIN = 16                             # the chunker sums per-piece token counts instead of
+                                               # re-measuring the joined chunk, which can drift a little
+WINDOW_SIZE = MAX_LENGTH - N_SPECIAL_TOKENS - SAFETY_MARGIN   # content tokens per chunk (750)
+OVERLAP = WINDOW_SIZE // 4                     # same 25% ratio as the old 768/192 setup
+SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 CANDIDATE_WINDOW_SIZES_FOR_OVERSIZE_CHECK = (512, 768, 1024)
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "cuad" / "train_separate_questions.json"
@@ -40,7 +50,7 @@ N_SANITY_CHECK_SAMPLES = 10
 RANDOM_SEED = 0
 
 
-# --- loading + cleaning the CUAD data (same shape as alec-eda-01.ipynb / main_pipeline.ipynb) ---
+# --- loading + cleaning the CUAD data (same shape as eda.ipynb / main_pipeline.ipynb) ---
 def load_cuad_df(path) -> pd.DataFrame:
     with open(path) as f:
         raw = json.load(f)
@@ -90,6 +100,39 @@ def build_clean_df(path) -> pd.DataFrame:
     ].reset_index(drop=True)
     assert clean_df["id"].is_unique, "clean_df ids must be unique — sanity_check_offsets() indexes by id"
     return clean_df
+
+
+# --- building the chunker, sized with the model's own tokenizer ---
+@lru_cache(maxsize=None)
+def load_tokenizer(model_name: str = MODEL_NAME):
+    """Load a Hugging Face tokenizer once and reuse it (loading it is slow, and the
+    audit, the notebook, and the truncation check all need the same one)."""
+    return AutoTokenizer.from_pretrained(model_name)
+
+
+def get_token_len_fn(model_name: str = MODEL_NAME):
+    """Token counter for the chunker, using the model's tokenizer *without* special tokens
+    ([CLS]/[SEP] are accounted for in WINDOW_SIZE instead).
+
+    Cached because RecursiveTokenChunker measures a lot of pieces, some of them many times
+    over while it merges, and the HF tokenizer is a good bit slower per call than tiktoken."""
+    tokenizer = load_tokenizer(model_name)
+
+    @lru_cache(maxsize=None)
+    def token_len(text: str) -> int:
+        return len(tokenizer(text, add_special_tokens=False)["input_ids"])
+
+    return token_len
+
+
+def build_chunker(token_len, window_size: int = WINDOW_SIZE, overlap: int = OVERLAP):
+    """The configured chunker -- one place to build it so the audit and the notebook can't drift."""
+    return RecursiveTokenChunker(
+        chunk_size=window_size,
+        chunk_overlap=overlap,
+        separators=SEPARATORS,
+        length_function=token_len,
+    )
 
 
 # --- chunking + recovering each chunk's offset back in the source text ---
@@ -197,6 +240,39 @@ def classify_spans(clean_df: pd.DataFrame, chunks_df: pd.DataFrame, token_len_fn
     return pd.DataFrame(results)
 
 
+# --- truncation check: every chunk has to fit the model input as-is ---
+def check_no_truncation(chunks_df: pd.DataFrame, tokenizer, max_length: int = MAX_LENGTH,
+                        window_size: int = WINDOW_SIZE) -> pd.Series:
+    """Tokenize every chunk exactly the way training will ([CLS]/[SEP] on, no truncation) and
+    raise if any comes out longer than max_length. If one did, the model would silently cut its
+    tail off, and a chunk labeled positive could lose the evidence that made it positive.
+
+    The chunker only *estimates* chunk size (it sums per-piece token counts), so this re-measures
+    the real thing. It also reports how far chunks drift past window_size, i.e. how much of
+    SAFETY_MARGIN actually gets used. Returns the per-chunk model token counts."""
+    print(f"\n--- checking every chunk fits the model input ({max_length} tokens incl. special tokens) ---")
+    valid_chunks = chunks_df[chunks_df["chunk_start"] >= 0]
+    encoded = tokenizer(valid_chunks["chunk_text"].tolist(), add_special_tokens=True, truncation=False)
+    model_tokens = pd.Series([len(ids) for ids in encoded["input_ids"]], index=valid_chunks.index)
+
+    n_special = len(tokenizer("")["input_ids"])
+    drift = model_tokens - n_special - window_size                   # > 0 means the chunker overshot its window
+    print(f"model tokens per chunk: median={model_tokens.median():.0f}  p99={model_tokens.quantile(0.99):.0f}  "
+          f"max={model_tokens.max()}  (limit {max_length})")
+    print(f"chunks over the {window_size}-token window (chunker estimate drift): {int((drift > 0).sum())}, "
+          f"worst overshoot {max(int(drift.max()), 0)} tokens, "
+          f"margin left at worst {max_length - int(model_tokens.max())} tokens")
+
+    over = valid_chunks.loc[model_tokens > max_length, "chunk_id"]
+    print(f"checked {len(valid_chunks)} chunks, {len(over)} would be truncated")
+    if len(over):
+        raise RuntimeError(
+            f"Truncation check FAILED -- {len(over)} chunks exceed {max_length} model tokens and would lose "
+            f"their tail at training time: {over.tolist()[:5]}. Increase SAFETY_MARGIN or lower WINDOW_SIZE."
+        )
+    return model_tokens
+
+
 # --- sanity checks: make sure the offset math actually holds before we trust the report ---
 def sanity_check_offsets(clean_df, chunks_df, spans_df, n=N_SANITY_CHECK_SAMPLES, seed=RANDOM_SEED):
     rng = random.Random(seed)
@@ -288,23 +364,15 @@ def sanity_check_offsets(clean_df, chunks_df, spans_df, n=N_SANITY_CHECK_SAMPLES
 
 
 def main():
-    encoding = tiktoken.get_encoding(ENCODING_NAME)
-
-    def token_len(text: str) -> int:
-        return len(encoding.encode(text))
+    token_len = get_token_len_fn(MODEL_NAME)
 
     print(f"loading and cleaning CUAD data from {DATA_PATH} ...")
     clean_df = build_clean_df(DATA_PATH)
     print(f"{clean_df['contract_id'].nunique()} contracts, {len(clean_df)} category rows")
 
-    chunker = RecursiveTokenChunker(
-        chunk_size=WINDOW_SIZE,
-        chunk_overlap=OVERLAP,
-        separators=["\n\n", "\n", ". ", " ", ""],
-        length_function=token_len,
-    )
-    print(f"chunking with RecursiveTokenChunker(chunk_size={WINDOW_SIZE}, "
-          f"chunk_overlap={OVERLAP}, encoding={ENCODING_NAME}) ...")
+    chunker = build_chunker(token_len)
+    print(f"chunking with RecursiveTokenChunker(chunk_size={WINDOW_SIZE}, chunk_overlap={OVERLAP}, "
+          f"tokenizer={MODEL_NAME}, model max_length={MAX_LENGTH}) ...")
     chunks_df = build_chunks_df(chunker, clean_df)
     n_offset_fail = int((chunks_df["chunk_start"] == -1).sum())
     print(f"{len(chunks_df)} chunks across {chunks_df['contract_id'].nunique()} contracts "
@@ -312,6 +380,9 @@ def main():
     if n_offset_fail:
         print(f"WARNING: {n_offset_fail} chunks could not be located in their contract's text "
               f"and were excluded from evidence matching below.")
+
+    # before any evidence numbers get reported: they only mean something if the model sees every chunk whole
+    check_no_truncation(chunks_df, load_tokenizer(MODEL_NAME))
 
     spans_df = classify_spans(clean_df, chunks_df, token_len, WINDOW_SIZE)
     n_no_coverage = int((spans_df["bucket"] == "NO_COVERAGE").sum())
