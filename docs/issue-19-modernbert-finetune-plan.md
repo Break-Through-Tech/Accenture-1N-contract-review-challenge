@@ -52,7 +52,7 @@ the validation split, and both the model checkpoint and the validation results a
 
 The baseline, ModernBERT and #22 all use it.
 
-**3. Save the baseline's scores** (Josiah, check with Dunni first since it's her notebook). Add one
+**3. Save the baseline's scores** (Josiah; check with Dunni first, since Dunni wrote that notebook). Add one
 cell to `threshold_tuning.ipynb` that saves `results/baseline/{tune,val}_probs.parquet` and prints
 AP using `multilabel_metrics`.
 
