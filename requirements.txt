@@ -19,9 +19,9 @@ tiktoken>=0.5        # old cl100k token counting: tokenizer_gap_check.py, main_p
 chunking_evaluation @ git+https://github.com/brandonstarxel/chunking_evaluation.git  # chunkers used in chunking_util.py, main_pipeline.ipynb, alec-eda-01.ipynb
 backoff>=2.2          # imported by chunking_evaluation but not declared in its own dependencies
 chromadb>=0.5        # local embedding function for the semantic chunkers in alec-eda-01.ipynb
-transformers>=4.48,<5.0  # ModernBERT (answerdotai/ModernBERT-base) tokenizer for chunking + model; keep on 4.x for TrainingArguments API compatibility
+transformers>=4.48       # ModernBERT (answerdotai/ModernBERT-base) tokenizer for chunking + model; first release with ModernBERT (works on 4.x and 5.x)
 datasets>=2.19,<3.0      # Hugging Face dataset conversion for chunk-level tokenized training batches
-accelerate>=0.26,<1.0    # required by transformers' Trainer for fine-tuning
+accelerate>=0.26         # required by transformers' Trainer for fine-tuning
 
 # PyTorch: the line below installs a CPU build on macOS/Windows and the CUDA
 # build on Linux (which bundles ~2.5 GB of nvidia-* libraries, even on a
