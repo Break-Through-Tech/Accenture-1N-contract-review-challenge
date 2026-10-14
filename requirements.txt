@@ -2,7 +2,7 @@
 # Developed on Python 3.11 (Intel macOS). Requires Python >= 3.11.
 # For a byte-identical environment on Python 3.11, use requirements-lock.txt instead.
 
-numpy>=2.0              # newer pyarrow/datasets wheels require NumPy 2.x on modern Windows installs
+numpy>=1.26,<2.0        # kept <2.0 for torch 2.2.x (last Intel-Mac wheels, built against NumPy 1.x); pyarrow/datasets work fine on 1.26
 pandas>=2.1
 matplotlib>=3.8
 seaborn>=0.13

@@ -28,38 +28,25 @@ TARGET_CATEGORIES = 2
 
 def build_chunk_label_frame() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     clean_df = chunking_util.build_clean_df(DATA_PATH)
+    required_columns = {
+        "contract_id",
+        "category",
+        "is_impossible",
+        "annotation_start",
+        "annotation_text",
+    }
+    missing = sorted(required_columns - set(clean_df.columns))
+    if missing:
+        raise KeyError(f"clean_df is missing required columns: {missing}")
+
     token_len = chunking_util.get_token_len_fn(MODEL_NAME)
     chunker = chunking_util.build_chunker(token_len)
     chunks_df = chunking_util.build_chunks_df(chunker, clean_df)
     chunks_df = chunks_df[chunks_df["chunk_start"] >= 0].reset_index(drop=True)
+    if chunks_df.empty:
+        raise ValueError("No valid chunks were produced from the contract text.")
 
-    contract_categories = clean_df[["contract_id", "category", "is_impossible"]].drop_duplicates()
-    chunk_labels_df = contract_categories.merge(chunks_df[["contract_id", "chunk_id"]], on="contract_id")
-
-    positives = []
-    evidenced = clean_df[~clean_df["is_impossible"]].copy()
-    if not evidenced.empty:
-        evidenced["annotation_end"] = evidenced["annotation_start"].astype(int) + evidenced["annotation_text"].str.len()
-        for contract_id, group in evidenced.groupby("contract_id"):
-            contract_chunks = chunks_df[(chunks_df["contract_id"] == contract_id) & (chunks_df["chunk_start"] >= 0)]
-            for _, row in group.iterrows():
-                start = int(row["annotation_start"])
-                end = int(row["annotation_end"])
-                overlaps = contract_chunks[
-                    (contract_chunks["chunk_start"] < end) & (contract_chunks["chunk_end"] > start)
-                ]
-                for chunk_id in overlaps["chunk_id"].tolist():
-                    positives.append({"chunk_id": chunk_id, "category": row["category"]})
-
-    positive_keys = pd.DataFrame(positives, columns=["chunk_id", "category"]).drop_duplicates()
-    positive_keys["label"] = 1
-    chunk_labels_df = chunk_labels_df.merge(positive_keys, on=["chunk_id", "category"], how="left")
-    chunk_labels_df["label"] = chunk_labels_df["label"].fillna(0).astype(int)
-    chunk_labels_df = chunk_labels_df[["contract_id", "chunk_id", "category", "is_impossible", "label"]]
-
-    assert (chunk_labels_df.loc[chunk_labels_df["is_impossible"], "label"] == 0).all(), (
-        "is_impossible categories must never get positive chunk labels"
-    )
+    chunk_labels_df = chunking_util.build_chunk_labels_df(clean_df, chunks_df)
     return clean_df, chunks_df, chunk_labels_df
 
 
@@ -83,11 +70,25 @@ def check_tokenizer_contract(tokenizer: AutoTokenizer, text: str = "The parties 
     }
 
 
-def build_model_dataset(chunk_labels_df: pd.DataFrame, chunks_df: pd.DataFrame, categories: list[str], sample_size: int = 32) -> tuple[Dataset, list[str]]:
+def build_model_dataset(
+    chunk_labels_df: pd.DataFrame,
+    chunks_df: pd.DataFrame,
+    categories: list[str],
+    sample_size: int = 32,
+) -> tuple[Dataset, list[str]]:
     selected = list(dict.fromkeys(categories))
+    if not selected:
+        raise ValueError("No categories were provided for model training.")
+
     subset = chunk_labels_df[chunk_labels_df["category"].isin(selected)]
+    if subset.empty:
+        raise ValueError(f"No chunk-label rows found for categories: {selected}")
+
     pivot = subset.pivot_table(index="chunk_id", columns="category", values="label", aggfunc="max", fill_value=0)
     dataset_df = chunks_df[["chunk_id", "chunk_text"]].merge(pivot.reset_index(), on="chunk_id", how="inner")
+    if dataset_df.empty:
+        raise ValueError("No chunk rows survived the category merge.")
+
     dataset_df = dataset_df[["chunk_text", *selected]].fillna(0)
     dataset_df = dataset_df.sample(n=min(len(dataset_df), sample_size), random_state=0).reset_index(drop=True)
     return Dataset.from_pandas(dataset_df), selected
@@ -117,12 +118,19 @@ def run_smoke_training() -> dict:
     check_tokenizer_contract(tokenizer)
 
     _, chunks_df, chunk_labels_df = build_chunk_label_frame()
-    categories = list(chunk_labels_df["category"].drop_duplicates().sort_values())[:TARGET_CATEGORIES]
+    # pick the categories with the most positive chunks, so the tiny sample actually has some 1s in it
+    positive_counts = chunk_labels_df.groupby("category")["label"].sum()
+    candidate_categories = positive_counts[positive_counts > 0].sort_values(ascending=False).index.tolist()
+    if not candidate_categories:
+        raise ValueError("No positive chunk labels were produced for any category.")
+
+    categories = candidate_categories[:TARGET_CATEGORIES]
     dataset, categories = build_model_dataset(chunk_labels_df, chunks_df, categories=categories, sample_size=32)
     tokenized = tokenize_dataset(tokenizer, dataset, categories)
 
-    train_ds = tokenized.select(range(max(1, len(tokenized) // 2)))
-    eval_ds = tokenized.select(range(max(1, len(tokenized) // 2), len(tokenized)))
+    train_end = max(1, len(tokenized) // 2)
+    train_ds = tokenized.select(range(train_end))
+    eval_ds = tokenized.select(range(train_end, len(tokenized)))
     if len(eval_ds) == 0:
         eval_ds = train_ds
 

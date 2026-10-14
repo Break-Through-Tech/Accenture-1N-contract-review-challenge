@@ -197,6 +197,42 @@ def build_chunks_df(chunker, clean_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# --- chunk labels: one row per (chunk, category), the training target for every model ---
+def build_chunk_labels_df(clean_df: pd.DataFrame, chunks_df: pd.DataFrame) -> pd.DataFrame:
+    """label=1 iff the chunk overlaps at least one evidence span for that category.
+
+    One shared definition so the notebook baseline, the transformer pipeline, and anything
+    else that trains on chunks can't end up with slightly different labels. Overlap (not full
+    containment) is on purpose: a chunk holding part of a clause still holds clause text."""
+    valid_chunks = chunks_df[chunks_df["chunk_start"] >= 0]
+
+    # one row per (contract, category), crossed with every chunk in that contract
+    contract_categories = clean_df[["contract_id", "category", "is_impossible"]].drop_duplicates()
+    chunk_labels_df = contract_categories.merge(valid_chunks[["contract_id", "chunk_id"]], on="contract_id")
+
+    # positive (chunk, category) pairs: a merge on contract_id + interval-overlap mask, instead of
+    # looping over every span -- same result, a lot faster on 8k+ chunks
+    evidenced = clean_df[~clean_df["is_impossible"]].copy()
+    evidenced["annotation_start"] = evidenced["annotation_start"].astype(int)
+    evidenced["annotation_end"] = evidenced["annotation_start"] + evidenced["annotation_text"].str.len()
+    overlap = valid_chunks[["contract_id", "chunk_id", "chunk_start", "chunk_end"]].merge(
+        evidenced[["contract_id", "category", "annotation_start", "annotation_end"]], on="contract_id"
+    )
+    overlap_mask = (overlap["chunk_start"] < overlap["annotation_end"]) & (overlap["chunk_end"] > overlap["annotation_start"])
+    positive_keys = overlap.loc[overlap_mask, ["chunk_id", "category"]].drop_duplicates()
+    positive_keys["label"] = 1
+
+    chunk_labels_df = chunk_labels_df.merge(positive_keys, on=["chunk_id", "category"], how="left")
+    chunk_labels_df["label"] = chunk_labels_df["label"].fillna(0).astype(int)
+    chunk_labels_df = chunk_labels_df[["contract_id", "chunk_id", "category", "is_impossible", "label"]]
+
+    # is_impossible means there's no evidence span to match, so a 1 here would be a merge bug
+    assert (chunk_labels_df.loc[chunk_labels_df["is_impossible"], "label"] == 0).all(), (
+        "is_impossible category got a positive chunk label -- merge bug"
+    )
+    return chunk_labels_df
+
+
 # --- classifying each evidence span as preserved, split, oversized, or uncovered ---
 def classify_spans(clean_df: pd.DataFrame, chunks_df: pd.DataFrame, token_len_fn, window_size: int) -> pd.DataFrame:
     evidenced = clean_df[~clean_df["is_impossible"]].copy()
