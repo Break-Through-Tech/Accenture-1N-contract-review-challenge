@@ -34,7 +34,7 @@ cutoffs is #21 (Dunni).
 | Main metric | **Average precision (AP)**, micro and macro, which needs no cutoff. F1 at a 0.5 cutoff is reported too. | Cutoffs are #21's job. Class weighting shifts probabilities upward, so F1 at a fixed 0.5 would partly measure that shift rather than real improvement. AP doesn't. |
 | Macro averages | Report the 41-category macro **and** a macro over categories with positives | `Unlimited/All-You-Can-Eat-License` has 0 positives in validation, and sklearn scores it as 0 for both F1 and AP without warning. |
 | Choosing a checkpoint, and choosing between #20 setups | Highest macro AP on the **tune** set (over categories with positives) | Loss is dominated by the 97.6% negatives and the common categories, while AP counts every category equally. Choosing on tune keeps validation untouched, so it stays a fair final score. |
-| Where to train | **Colab GPU**: bf16 if supported (L4/A100), otherwise fp16 (T4). Local CPU is the fallback. | #20 needs several runs. Locally a run takes roughly 6–7 hours (extrapolated from the smoke test's 0.74 chunks/sec on a 24-core CPU), so only one could fit in a day. |
+| Where to train | **Colab GPU**: bf16 if supported (L4/A100), otherwise fp16 (T4). Local CPU is the fallback. | #20 needs several runs. Locally a run takes roughly 4.5 hours (measured: 14.2 s per optimizer step on a 24-core CPU, 1,017 steps, plus evaluation), so only one or two fit in a day. |
 | Training data on Colab | Copy `chunks_df.parquet` (9.9 MB) and `chunk_labels_df.parquet` (0.3 MB) from `data/processed/` to Drive and train from those. Don't rebuild chunks on Colab. | `chunking_evaluation` pulls in `openai`, `anthropic` and `chromadb` when imported. The parquet files are exactly what the baseline used. |
 | Where outputs go | Final model weights (~600 MB each) → Drive. Metrics and predicted probabilities → committed under `results/<run name>/` | Too big for Git. Saved probabilities let #21 and #22 work without re-running any model. Trainer checkpoints include optimizer state (~1.8 GB each), so keep `save_total_limit=1`. |
 
@@ -152,7 +152,7 @@ results for every run.
 4. Run v2 and v3 back-to-back (step 9), then v4 if time allows.
 5. Fill in the #20 comparison (steps 10–11).
 
-If Colab isn't available, run v1 locally overnight (roughly 6–7 hours) and run #20's options on
+If Colab isn't available, run v1 locally (roughly 4.5 hours) and run #20's options on
 Colab later.
 
 ## Risks
@@ -173,7 +173,8 @@ Colab later.
 | New | Changed |
 |---|---|
 | `notebooks/splits.py`, `data/splits/*.txt` | `notebooks/modernbert_tokenizer_pipeline.py` (`padding=False`) |
-| `notebooks/eval_metrics.py` | `.gitignore` (local smoke-run folder) |
+| `notebooks/eval_metrics.py` | `.gitignore` (local runs folder `notebooks/finetune_runs/`) |
+| | `notebooks/chunking_util.py` (imports `chunking_evaluation` only inside `build_chunker`, so Colab doesn't need it) |
 | `notebooks/modernbert_finetune.py` | |
 | `notebooks/modernbert_finetune_colab.ipynb` | |
 | `results/modernbert_v1/` … `results/modernbert_v4_oversample/` | |

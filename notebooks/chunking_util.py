@@ -27,7 +27,6 @@ from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
-from chunking_evaluation.chunking import RecursiveTokenChunker
 from transformers import AutoTokenizer
 
 from cuad_cleaning import clean_text_with_map, build_reverse_map, relocate_answer
@@ -127,6 +126,10 @@ def get_token_len_fn(model_name: str = MODEL_NAME):
 
 def build_chunker(token_len, window_size: int = WINDOW_SIZE, overlap: int = OVERLAP):
     """The configured chunker -- one place to build it so the audit and the notebook can't drift."""
+    # imported here, not at the top: chunking_evaluation drags in openai/anthropic/chromadb, and
+    # training code (e.g. on Colab) imports this module only for its config and label helpers
+    from chunking_evaluation.chunking import RecursiveTokenChunker
+
     return RecursiveTokenChunker(
         chunk_size=window_size,
         chunk_overlap=overlap,
