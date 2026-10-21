@@ -1,0 +1,33 @@
+{
+  "run_name": "modernbert_v3_posweight",
+  "best_checkpoint": "/content/drive/MyDrive/cuad_finetune/runs/modernbert_v3_posweight/checkpoints/checkpoint-1017",
+  "best_tune_macro_ap_present": 0.5248391733176623,
+  "tune": {
+    "micro_ap": 0.6981979777207967,
+    "macro_ap_all": 0.5248391733176623,
+    "macro_ap_present": 0.5248391733176623,
+    "micro_precision": 0.5952537903757416,
+    "micro_recall": 0.6903669724770642,
+    "micro_f1": 0.6392920353982301,
+    "macro_f1_all": 0.49863596043807934,
+    "macro_f1_present": 0.49863596043807934,
+    "n_chunks": 1286,
+    "n_positive_pairs": 1308,
+    "base_rate": 0.024807495353336116,
+    "n_categories_present": 41
+  },
+  "val": {
+    "micro_ap": 0.7049163875673214,
+    "macro_ap_all": 0.5339812313907476,
+    "macro_ap_present": 0.5473307621755163,
+    "micro_precision": 0.5816576753310446,
+    "micro_recall": 0.7013601419278533,
+    "micro_f1": 0.6359249329758713,
+    "macro_f1_all": 0.49365871897558466,
+    "macro_f1_present": 0.5060001869499743,
+    "n_chunks": 1841,
+    "n_positive_pairs": 1691,
+    "base_rate": 0.022402988831626502,
+    "n_categories_present": 40
+  }
+}

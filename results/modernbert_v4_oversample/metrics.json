@@ -1,0 +1,33 @@
+{
+  "run_name": "modernbert_v4_oversample",
+  "best_checkpoint": "/content/drive/MyDrive/cuad_finetune/runs/modernbert_v4_oversample/checkpoints/checkpoint-1110",
+  "best_tune_macro_ap_present": 0.5130516115581617,
+  "tune": {
+    "micro_ap": 0.7156162070176789,
+    "macro_ap_all": 0.5130516115581617,
+    "macro_ap_present": 0.5130516115581617,
+    "micro_precision": 0.8104008667388949,
+    "micro_recall": 0.5718654434250765,
+    "micro_f1": 0.6705513222770059,
+    "macro_f1_all": 0.4199929639683619,
+    "macro_f1_present": 0.4199929639683619,
+    "n_chunks": 1286,
+    "n_positive_pairs": 1308,
+    "base_rate": 0.024807495353336116,
+    "n_categories_present": 41
+  },
+  "val": {
+    "micro_ap": 0.7152183926048139,
+    "macro_ap_all": 0.5271010675688121,
+    "macro_ap_present": 0.5402785942580325,
+    "micro_precision": 0.8061749571183533,
+    "micro_recall": 0.5558840922531046,
+    "micro_f1": 0.6580329016450822,
+    "macro_f1_all": 0.42513376101890094,
+    "macro_f1_present": 0.43576210504437346,
+    "n_chunks": 1841,
+    "n_positive_pairs": 1691,
+    "base_rate": 0.022402988831626502,
+    "n_categories_present": 40
+  }
+}
