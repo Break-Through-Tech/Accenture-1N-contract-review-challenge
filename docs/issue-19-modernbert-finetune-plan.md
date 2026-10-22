@@ -1,6 +1,11 @@
 # Plan: Fine-tune ModernBERT (issue #19) and handle imbalance (issue #20)
 
-**Owner:** Albert (both issues) · **Branch:** `albert-finetune` · **Status:** in progress
+**Owner:** Albert (both issues) · **Branch:** `albert-finetune` · **Status:** done
+
+> **Outcome:** v1–v4 plus a 6-epoch v1 were trained on a Colab A100 (4–8 min each). The best setup
+> is **v2 (bias init)**: validation micro AP 0.761 and macro AP 0.584, vs 0.694 and 0.478 for plain
+> v1. Full results, findings and file formats: [results/README.md](../results/README.md). The
+> optional combined run (best options together) was skipped.
 
 | Issue | Done when (from the issue) |
 |---|---|
