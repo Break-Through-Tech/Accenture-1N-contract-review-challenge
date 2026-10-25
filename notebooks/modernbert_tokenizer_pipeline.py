@@ -96,9 +96,12 @@ def build_model_dataset(
 
 def tokenize_dataset(tokenizer: AutoTokenizer, dataset: Dataset, categories: list[str], max_length: int = MAX_LENGTH) -> Dataset:
     def _tokenize_batch(examples):
+        # no padding here: padding inside dataset.map pads every row to the longest chunk in its
+        # 1,000-row map batch (~750 tokens) and stores it that way. DataCollatorWithPadding pads
+        # each training batch to its own longest chunk instead, so less compute goes to pad tokens.
         encoded = tokenizer(
             examples["chunk_text"],
-            padding=True,
+            padding=False,
             truncation=False,
             return_attention_mask=True,
         )
