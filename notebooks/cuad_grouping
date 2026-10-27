@@ -1,0 +1,160 @@
+
+import pandas as pd
+
+# Turn the original 41 CUAD categories into 12 groups.
+# Document Name and Parties are excluded (extracted separately)
+
+CLAUSE_GROUPS = {
+    "Dates & Term": [
+        "Agreement Date",
+        "Effective Date",
+        "Expiration Date",
+        "Renewal Term",
+        "Notice Period To Terminate Renewal",
+    ],
+    "Competitive Restrictions": [
+        "Non-Compete",
+        "Exclusivity",
+        "No-Solicit Of Customers",
+        "Competitive Restriction Exception",
+    ],
+    "Control & Assignment": [
+        "Change Of Control",
+        "Anti-Assignment",
+    ],
+    "Licensing": [
+        "License Grant",
+        "Non-Transferable License",
+        "Affiliate License-Licensor",
+        "Affiliate License-Licensee",
+        "Unlimited/All-You-Can-Eat-License",
+        "Irrevocable Or Perpetual License",
+    ],
+    "Post-Termination & Audit": [
+        "Post-Termination Services",
+        "Audit Rights",
+    ],
+    "Liability": [
+        "Uncapped Liability",
+        "Cap On Liability",
+    ],
+    "Financial & Commercial Terms": [
+        "Revenue/Profit Sharing",
+        "Minimum Commitment",
+        "Price Restrictions",
+        "Most Favored Nation",
+        "Volume Restriction",
+        "Rofr/Rofo/Rofn",
+    ],
+    "Intellectual Property & Technology": [
+        "Ip Ownership Assignment",
+        "Joint Ip Ownership",
+        "Source Code Escrow",
+        "Covenant Not To Sue",
+    ],
+    "Termination for Convenience": [
+        "Termination For Convenience",
+    ],
+    "Legal & Contractual Protections": [
+        "Governing Law",
+        "Insurance",
+        "Third Party Beneficiary",
+        "Warranty Duration",
+    ],
+    "Liquidated Damages": [
+        "Liquidated Damages",
+    ],
+    "Employee & Business Conduct": [
+        "No-Solicit Of Employees",
+        "Non-Disparagement",
+    ],
+}
+
+# Categories excluded from modeling
+EXCLUDED_CATEGORIES = {
+    "Document Name",
+    "Parties",
+}
+
+# Create mapping from original category to consolidated group
+CLAUSE_TO_GROUP = {
+    clause: group
+    for group, clauses in CLAUSE_GROUPS.items()
+    for clause in clauses
+}
+
+
+def group_clause(clause_name):
+    """
+    Map an original CUAD category to its consolidated group.
+    Excluded categories return None.
+    """
+    if clause_name in EXCLUDED_CATEGORIES:
+        return None
+
+    if clause_name not in CLAUSE_TO_GROUP:
+        raise ValueError(
+            f"Unknown CUAD category: {clause_name}"
+        )
+
+    return CLAUSE_TO_GROUP[clause_name]
+
+
+def apply_clause_grouping(df, clause_column="category"):
+    """
+    Apply clause grouping to a cleaned CUAD DataFrame.
+
+    Preserves original category labels and adds a new
+    grouped_category column.
+    """
+    df = df.copy()
+
+    df["grouped_category"] = df[clause_column].apply(
+        group_clause
+    )
+
+    # Remove excluded categories
+    df = df.dropna(subset=["grouped_category"])
+
+    return df
+
+
+def validate_clause_groups():
+    """
+    Verify that all 41 original categories are accounted for.
+    """
+    assert len(CLAUSE_GROUPS) == 12, (
+        "Expected exactly 12 groups."
+    )
+
+    all_clauses = [
+        clause
+        for clauses in CLAUSE_GROUPS.values()
+        for clause in clauses
+    ]
+
+    assert len(all_clauses) == len(set(all_clauses)), (
+        "Duplicate category found."
+    )
+
+    assert not set(all_clauses) & EXCLUDED_CATEGORIES, (
+        "Excluded category appears in grouping."
+    )
+
+    assert len(all_clauses) == 39, (
+        "Expected 39 retained categories."
+    )
+
+    assert len(all_clauses) + len(EXCLUDED_CATEGORIES) == 41, (
+        "Expected 41 original categories."
+    )
+
+    print("Validation successful!")
+    print(f"Original categories: 41")
+    print(f"Consolidated groups: {len(CLAUSE_GROUPS)}")
+    print(f"Retained categories: {len(all_clauses)}")
+    print(f"Excluded categories: {len(EXCLUDED_CATEGORIES)}")
+
+
+if __name__ == "__main__":
+    validate_clause_groups()
