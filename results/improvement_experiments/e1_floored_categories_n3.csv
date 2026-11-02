@@ -1,0 +1,3 @@
+category,n_pos_tune,n_pos_val,cutoff_parent,cutoff_n3,fp_parent,fp_n3,recall_parent,recall_n3,f1_parent,f1_n3
+Affiliate License-Licensor,2,7,0.01,0.5,137,5,1.0,0.14285714285714285,0.09271523178807947,0.15384615384615385
+Most Favored Nation,2,7,0.02,0.5,46,0,0.14285714285714285,0.0,0.037037037037037035,0.0

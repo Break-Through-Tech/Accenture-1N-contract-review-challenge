@@ -1,0 +1,42 @@
+category,threshold_parent,threshold_e1,threshold_n3
+Affiliate License-Licensee,0.19,0.19,0.19
+Affiliate License-Licensor,0.01,0.01,0.5
+Agreement Date,0.46,0.46,0.46
+Anti-Assignment,0.53,0.53,0.53
+Audit Rights,0.17,0.17,0.17
+Cap On Liability,0.51,0.51,0.51
+Change Of Control,0.26,0.26,0.26
+Competitive Restriction Exception,0.17,0.17,0.17
+Covenant Not To Sue,0.19,0.19,0.19
+Document Name,0.6,0.6,0.6
+Effective Date,0.49,0.49,0.49
+Exclusivity,0.16,0.16,0.16
+Expiration Date,0.17,0.17,0.17
+Governing Law,0.42,0.42,0.42
+Insurance,0.61,0.61,0.61
+Ip Ownership Assignment,0.48,0.48,0.48
+Irrevocable Or Perpetual License,0.42,0.42,0.42
+Joint Ip Ownership,0.15,0.15,0.15
+License Grant,0.62,0.62,0.62
+Liquidated Damages,0.2,0.2,0.2
+Minimum Commitment,0.21,0.21,0.21
+Most Favored Nation,0.02,0.02,0.5
+No-Solicit Of Customers,0.11,0.11,0.11
+No-Solicit Of Employees,0.15,0.15,0.15
+Non-Compete,0.29,0.29,0.29
+Non-Disparagement,0.05,0.05,0.05
+Non-Transferable License,0.48,0.48,0.48
+Notice Period To Terminate Renewal,0.2,0.2,0.2
+Parties,0.52,0.52,0.52
+Post-Termination Services,0.25,0.25,0.25
+Price Restrictions,0.02,0.02,0.02
+Renewal Term,0.08,0.08,0.08
+Revenue/Profit Sharing,0.11,0.11,0.11
+Rofr/Rofo/Rofn,0.2,0.2,0.2
+Source Code Escrow,0.08,0.08,0.08
+Termination For Convenience,0.23,0.23,0.23
+Third Party Beneficiary,0.18,0.18,0.18
+Uncapped Liability,0.05,0.05,0.05
+Unlimited/All-You-Can-Eat-License,0.13,0.13,0.13
+Volume Restriction,0.05,0.05,0.05
+Warranty Duration,0.13,0.13,0.13
