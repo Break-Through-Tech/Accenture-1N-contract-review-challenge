@@ -1,0 +1,33 @@
+{
+  "run_name": "modernbert_v5_biasinit_lr3e-5",
+  "best_checkpoint": "/content/drive/MyDrive/cuad_finetune/runs/modernbert_v5_baisinit_lr3e-5/checkpoints/checkpoint-1017",
+  "best_tune_macro_ap_present": 0.5082593039066807,
+  "tune": {
+    "micro_ap": 0.7141844379374339,
+    "macro_ap_all": 0.5082593039066807,
+    "macro_ap_present": 0.5082593039066807,
+    "micro_precision": 0.8198403648802737,
+    "micro_recall": 0.5496941896024465,
+    "micro_f1": 0.6581235697940503,
+    "macro_f1_all": 0.4118014903646643,
+    "macro_f1_present": 0.4118014903646643,
+    "n_chunks": 1286,
+    "n_positive_pairs": 1308,
+    "base_rate": 0.024807495353336116,
+    "n_categories_present": 41
+  },
+  "val": {
+    "micro_ap": 0.7249500668859662,
+    "macro_ap_all": 0.5153316046377467,
+    "macro_ap_present": 0.5282148947536904,
+    "micro_precision": 0.8135444151275286,
+    "micro_recall": 0.5470136014192786,
+    "micro_f1": 0.6541725601131542,
+    "macro_f1_all": 0.4138316990239948,
+    "macro_f1_present": 0.4241774914995947,
+    "n_chunks": 1841,
+    "n_positive_pairs": 1691,
+    "base_rate": 0.022402988831626502,
+    "n_categories_present": 40
+  }
+}
