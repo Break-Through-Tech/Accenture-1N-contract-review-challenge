@@ -40,11 +40,12 @@ Local (x64 Python 3.11-3.13 venv with requirements.txt installed), from notebook
     python predict.py --text-file my_contract.txt --model-root C:/path/to/cuad_finetune/runs
     # or set CUAD_MODEL_ROOT once ($env:CUAD_MODEL_ROOT = "..." in PowerShell, export in bash) and drop --model-root
 
-Precision: on an Ampere-or-newer GPU (A100, L4) the forward pass runs under bf16 autocast, the same as
-trainer.predict when results/<run>/val_probs.parquet were written. On CPU (or a T4) it runs in fp32. On the
-checked validation contracts, both agree with the saved probabilities to a mean abs difference of ~1e-4 and a max
-of a few 1e-2, with no yes/no changes at the cutoffs. In bf16, batch composition alone moves results that much.
-predict_check.py checks this.
+Precision: fp32 by default on every device (team decision, issue #31). In fp32 the output doesn't depend on batch
+size (batch 1 vs 8: max abs difference 5.6e-6) or on GPU vs CPU. bf16 autocast (precision="bf16", Ampere-or-newer
+GPUs only) is about 2.6x faster on an L4 and fine for bulk scoring, but batch composition alone moves its
+probabilities by up to ~5e-2. precision="auto" means bf16 where the GPU supports it and fp32 otherwise. That's how
+results/<run>/val_probs.parquet were made, so predict_check.py uses it to reproduce them. Against those saved
+probabilities, both precisions agree to a mean abs difference of ~1e-4, with no yes/no changes at the cutoffs.
 """
 
 from __future__ import annotations
@@ -82,7 +83,8 @@ MODEL_ROOT_ENV = "CUAD_MODEL_ROOT"
 COLAB_MODEL_ROOT = Path("/content/drive/MyDrive/cuad_finetune/runs")
 N_CATEGORIES = 41
 PREDICT_BATCH_SIZE = 8          # ~1 GB of activations at 768 tokens in fp32; fine on CPU and any Colab GPU
-PRECISIONS = ("auto", "bf16", "fp32")
+PRECISIONS = ("fp32", "bf16", "auto")
+DEFAULT_PRECISION = "fp32"      # batch- and device-independent output; see the module docstring
 
 
 # --- text -> chunks (reuses the training cleaner + chunker, nothing re-implemented) ---
@@ -159,9 +161,10 @@ def resolve_device(device=None) -> torch.device:
 
 
 def resolve_precision(precision: str, device: torch.device) -> str:
-    """'auto' = bf16 autocast on Ampere-or-newer GPUs (what modernbert_finetune.pick_precision chose for the runs,
-    so the saved probabilities are reproduced), fp32 everywhere else. Uses the compute capability, not
-    torch.cuda.is_bf16_supported(), for the same reason pick_precision does (it can say True on a T4)."""
+    """'fp32' (the default) = full precision. 'bf16' = bf16 autocast, Ampere-or-newer GPUs only. 'auto' = bf16 where
+    supported, else fp32. That's what modernbert_finetune.pick_precision chose for the runs, so predict_check.py uses
+    it to reproduce the saved probabilities. Checks the compute capability, not torch.cuda.is_bf16_supported(), for
+    the same reason pick_precision does: that can report True on a T4."""
     if precision not in PRECISIONS:
         raise ValueError(f"precision must be one of {PRECISIONS}, got {precision!r}")
     if precision == "fp32":
@@ -262,7 +265,7 @@ def _autocast(precision: str):
 
 
 def score_chunks(chunk_texts: Sequence[str], *, model_root=None, runs: Sequence[str] = RUNS_ENSEMBLE, device=None,
-                 precision: str = "auto", batch_size: int = PREDICT_BATCH_SIZE, sort_by_length: bool = True):
+                 precision: str = DEFAULT_PRECISION, batch_size: int = PREDICT_BATCH_SIZE, sort_by_length: bool = True):
     """-> (categories, {run: float32 array (n_chunks, 41)}), rows in input order.
 
     Tokenized like training (modernbert_tokenizer_pipeline.tokenize_dataset: [CLS]/[SEP] on, no truncation,
@@ -305,7 +308,7 @@ def score_chunks(chunk_texts: Sequence[str], *, model_root=None, runs: Sequence[
 
 # --- public API ---
 def predict_contract(raw_text: str, *, contract_id: str = "contract", model_root=None,
-                     runs: Sequence[str] = RUNS_ENSEMBLE, thresholds=None, device=None, precision: str = "auto",
+                     runs: Sequence[str] = RUNS_ENSEMBLE, thresholds=None, device=None, precision: str = DEFAULT_PRECISION,
                      batch_size: int = PREDICT_BATCH_SIZE) -> pd.DataFrame:
     """Raw contract text (CUAD `paragraphs[].context`, or any plain text) -> one row per (chunk, category):
 
@@ -355,7 +358,9 @@ def main():
     parser.add_argument("--runs", nargs="+", default=list(RUNS_ENSEMBLE))
     parser.add_argument("--threshold", type=float, default=None,
                         help="one cutoff for every category (required when --runs isn't the ensemble)")
-    parser.add_argument("--precision", choices=PRECISIONS, default="auto")
+    parser.add_argument("--precision", choices=PRECISIONS, default=DEFAULT_PRECISION,
+                        help="fp32 (default): same output on any device or batch size; bf16: ~2.6x faster on an "
+                             "Ampere+ GPU for bulk scoring, output moves up to ~5e-2 with batching; auto: bf16 if supported")
     parser.add_argument("--device", default=None, help="cpu or cuda; default cuda if available")
     parser.add_argument("--batch-size", type=int, default=PREDICT_BATCH_SIZE)
     parser.add_argument("--out", type=Path, default=None, help="optional CSV for the per-chunk predictions")

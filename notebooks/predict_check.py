@@ -19,6 +19,11 @@ Checks
   Exact batching (--exact-batching): all 1,841 val chunks in val_probs row order, batches of 16, bf16, no length
      sorting. That's how trainer.predict batched them, so this separates batching noise from GPU/library
      differences. Runs A + this only.
+  Device comparison (--compare-devices): the same 3 contracts scored in fp32 on the GPU and on the CPU, compared
+     directly with each other (reported only). Runs A + this only.
+  Load timing (--time-load): loads both runs three times. The first load is cold only in a fresh runtime that hasn't
+     read the weights yet. The second load comes after clearing the in-process cache, so the files are in the OS/Drive
+     cache. The third is a cached call. Runs only this.
   C. Smoke test on an unseen contract: --smoke-text (preferred: any non-CUAD contract) or --smoke-test-json N
      (reads only the text of test.json contract N; no labels are read, no metrics computed, nothing tuned).
      Checks shape, ids, probability range, predicted == prob >= threshold, raw offsets, and times it.
@@ -46,6 +51,11 @@ Colab: notebooks/predict_check_colab.ipynb does all of this with Runtime > Run a
     !python predict_check.py {CHUNKS} --exact-batching                                            # diagnostic
     !python predict_check.py {CHUNKS} --precision fp32 --batch-sizes 8 1                          # GPU fp32 stability
     !python predict_check.py {CHUNKS} --device cpu --precision fp32 --smoke-text /content/my_contract.txt  # B2 + C
+    !python predict_check.py {CHUNKS} --compare-devices                                           # GPU vs CPU fp32
+    !python predict_check.py --time-load        # FIRST thing in a fresh runtime, or the "cold" number isn't cold
+
+--precision defaults to "auto" here (bf16 on an Ampere+ GPU, fp32 otherwise), unlike predict.py's fp32 default,
+because the saved references in val_probs.parquet were made in bf16.
 
 Local x64 Python 3.11-3.13 venv (CPU, so B2), from notebooks/:
 
@@ -278,10 +288,48 @@ def exact_batching(report: Report, val_refs, texts, chunks_ref, model_root, devi
     compare(report, ids, categories, new, saved_probs(val_refs, ids, categories), strict_max=True)
 
 
+# --- GPU fp32 vs CPU fp32 ---
+def compare_devices(report: Report, chunks_by_contract, model_root):
+    if not torch.cuda.is_available():
+        raise RuntimeError("--compare-devices needs a GPU runtime (it compares GPU fp32 with CPU fp32)")
+    chunks = pd.concat(chunks_by_contract.values(), ignore_index=True)
+    ids = chunks["chunk_id"].tolist()
+    out, seconds = {}, {}
+    for device in ("cuda", "cpu"):
+        predict.load_models(model_root, RUNS, device)
+        start = time.time()
+        categories, out[device] = predict.score_chunks(chunks["chunk_text"], model_root=model_root, runs=RUNS,
+                                                       device=device, precision="fp32")
+        seconds[device] = time.time() - start
+    print(f"\n=== GPU fp32 vs. CPU fp32: same {len(ids)} chunks, batch size {predict.PREDICT_BATCH_SIZE} "
+          f"(GPU {seconds['cuda']:.1f}s, CPU {seconds['cpu']:.1f}s; reported only) ===")
+    compare(report, ids, categories, out["cuda"], out["cpu"], ref_name="cpu", acceptance=False)
+
+
+# --- model load timing ---
+def time_model_load(model_root, device):
+    root = predict.resolve_model_root(model_root)
+    dirs = {run: predict.run_model_dir(root, run) for run in RUNS}
+    size_mb = sum(f.stat().st_size for d in dirs.values() for f in d.iterdir() if f.is_file()) / 1e6
+    print(f"\n=== model load timing: {len(RUNS)} runs from {root} ({size_mb:,.0f} MB on disk) to {device} ===")
+    timings = []
+    for label, clear in (("first load (cold only in a fresh runtime)", False),
+                         ("reload, files already read once (OS/Drive cache warm)", True),
+                         ("cached call (models already in memory)", False)):
+        if clear:
+            predict._load_model.cache_clear()
+        start = time.time()
+        predict.load_models(model_root, RUNS, device)
+        timings.append((label, time.time() - start))
+    for label, seconds in timings:
+        print(f"  {label:55s} {seconds:8.2f}s")
+    print("  (excludes importing torch/transformers; tokenizer and chunker load separately on the first predict_contract call)")
+
+
 # --- C: smoke test ---
 def smoke_test(report: Report, raw_text: str, contract_id: str, model_root, device, precision, batch_size):
     print(f"\n=== C. smoke test on an unseen contract: {contract_id} ({len(raw_text):,} chars) ===")
-    predict._load_model.cache_clear()            # time a cold load, as a fresh session would see it
+    predict._load_model.cache_clear()            # reload from files already read once (true cold load: --time-load)
     start = time.time()
     predict.load_models(model_root, RUNS, device)
     load_s = time.time() - start
@@ -306,7 +354,7 @@ def smoke_test(report: Report, raw_text: str, contract_id: str, model_root, devi
     report.check(bool((pred["predicted"] == (pred["prob"] >= pred["threshold"])).all()), "predicted == prob >= threshold")
     check_raw_offsets(report, raw_text, chunks, contract_id)
 
-    print(f"  timing on {predict.resolve_device(device)}: model load {load_s:.1f}s ({len(RUNS)} runs); "
+    print(f"  timing on {predict.resolve_device(device)}: model reload, files cached {load_s:.1f}s ({len(RUNS)} runs); "
           f"predict_contract {total_s:.1f}s ({total_s / n_chunks:.2f}s/chunk, ensemble incl. chunking); "
           f"one run, scoring only {single_s:.1f}s")
     rollup = predict.contract_rollup(pred)
@@ -322,12 +370,17 @@ def main():
     parser.add_argument("--contracts", nargs="+", default=None, help="validation contract ids (default: fewest/median/most chunks)")
     parser.add_argument("--chunks-df", type=Path, default=None, help="training chunks_df.parquet, for an exact text/offset comparison")
     parser.add_argument("--batch-sizes", type=int, nargs="+", default=[predict.PREDICT_BATCH_SIZE])
-    parser.add_argument("--precision", choices=predict.PRECISIONS, default="auto")
+    parser.add_argument("--precision", choices=predict.PRECISIONS, default="auto",
+                        help="default auto = bf16 on an Ampere+ GPU, like the saved references (predict.py defaults to fp32)")
     parser.add_argument("--device", default=None)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--skip-probs", action="store_true", help="check A only (no model weights needed)")
     mode.add_argument("--exact-batching", action="store_true",
                       help="A + all val chunks in training's batches (bf16, 16 per batch, row order); skips B and C")
+    mode.add_argument("--compare-devices", action="store_true",
+                      help="A + the 3 contracts in fp32 on GPU vs CPU, compared directly; skips B and C")
+    mode.add_argument("--time-load", action="store_true",
+                      help="only time loading both models (cold/warm/cached); run first in a fresh runtime")
     smoke = parser.add_mutually_exclusive_group()
     smoke.add_argument("--smoke-text", type=Path, default=None, help="unseen contract as a UTF-8 .txt (preferred)")
     smoke.add_argument("--smoke-test-json", type=int, default=None, metavar="N",
@@ -338,6 +391,10 @@ def main():
     print(f"torch {torch.__version__}, transformers {transformers.__version__}; device {device}"
           + (f" ({torch.cuda.get_device_name(0)})" if device.startswith("cuda") else "")
           + f". Runs trained/predicted on {TRAINED_WITH['gpu']} with {TRAINED_WITH['torch']} / {TRAINED_WITH['transformers']}")
+
+    if args.time_load:           # before anything else touches the weights
+        time_model_load(args.model_root, device)
+        return
 
     report = Report()
     val_refs = load_val_probs()
@@ -357,6 +414,8 @@ def main():
         exact_batching(report, val_refs, texts, chunks_ref, args.model_root, device)
         if args.smoke_text is not None or args.smoke_test_json is not None:
             print("\n(--exact-batching runs A + the diagnostic only: smoke test C skipped)")
+    elif args.compare_devices:
+        compare_devices(report, chunks_by_contract, args.model_root)
     elif not args.skip_probs:
         runs_by_batch = {}
         for batch_size in args.batch_sizes:
