@@ -2,16 +2,23 @@
 Checks for predict.py (issue #31, "Done when": predict_contract reproduces the saved validation probabilities and
 runs on a contract it hasn't seen). Exits with code 1 if any check fails.
 
+Acceptance rule (revised after the first Colab run; see the issue #31 comment):
+  * exact chunk match (check A)
+  * mean |diff| <= 1e-3 and max |diff| <= 5e-2 against results/<run>/val_probs.parquet, for each run and the ensemble
+  * zero yes/no flips: the ensemble's prob >= cutoff (selected_thresholds.csv) agrees with the saved ensemble's
+The original strict "max |diff| <= 1e-3" is still printed, as a reported-only number, for the exact-batching run.
+
+Checks
   A. Chunks: for 3 validation contracts (fewest, median and most chunks in val_probs), the raw CUAD text run
-     through predict.chunk_contract gives exactly the chunk ids in results/<run>/val_probs.parquet; with
-     --chunks-df, also the same chunk_text/chunk_start/chunk_end as training's chunks_df.parquet. Every chunk's
-     raw_start/raw_end slice of the raw text, cleaned again, equals the chunk text. Needs no model weights.
-  B. Probabilities, joined on chunk_id, for each run against its own val_probs and for the ensemble against the
-     mean of the two saved files. Max abs difference over all (chunk, category) pairs:
-       B1 (GPU, bf16 autocast = how val_probs were made; the acceptance test): <= 1e-3, each run and ensemble.
-       B2 (fp32, e.g. CPU):  <= 2e-2, plus the ensemble's yes/no at the selected cutoffs must agree with the saved
-          ensemble's. Every disagreeing (chunk, category) pair is listed with both probabilities and the cutoff.
-     --batch-sizes 8 1 repeats B with batch size 1 (no padding at all), to tell padding noise from a real bug.
+     through predict.chunk_contract gives exactly the chunk ids in val_probs; with --chunks-df, also the same
+     chunk_text/chunk_start/chunk_end as training's chunks_df.parquet. Every chunk's raw_start/raw_end slice of the
+     raw text, cleaned again, equals the chunk text. Needs no model weights.
+  B. Probabilities on those 3 contracts, joined on chunk_id: each run against its own val_probs, and the ensemble
+     against the mean of the two saved files. B1 = bf16 autocast on an Ampere+ GPU (how val_probs were made),
+     B2 = fp32. With several --batch-sizes, also reports (not a pass/fail) how much the output moves between them.
+  Exact batching (--exact-batching): all 1,841 val chunks in val_probs row order, batches of 16, bf16, no length
+     sorting. That's how trainer.predict batched them, so this separates batching noise from GPU/library
+     differences. Runs A + this only.
   C. Smoke test on an unseen contract: --smoke-text (preferred: any non-CUAD contract) or --smoke-test-json N
      (reads only the text of test.json contract N; no labels are read, no metrics computed, nothing tuned).
      Checks shape, ids, probability range, predicted == prob >= threshold, raw offsets, and times it.
@@ -22,7 +29,8 @@ Check A only, anywhere the chunking stack is installed (no weights needed), from
 
     python predict_check.py --skip-probs
 
-Colab, GPU runtime (Runtime > Change runtime type > A100 or L4, so bf16 matches training), one cell per group:
+Colab: notebooks/predict_check_colab.ipynb does all of this with Runtime > Run all. By hand, on a GPU runtime
+(A100 or L4, so bf16 matches training):
 
     from google.colab import drive
     drive.mount("/content/drive")
@@ -33,18 +41,18 @@ Colab, GPU runtime (Runtime > Change runtime type > A100 or L4, so bf16 matches 
 
     import os
     os.environ["CUAD_MODEL_ROOT"] = "/content/drive/MyDrive/cuad_finetune/runs"
-    !python predict_check.py --chunks-df /content/drive/MyDrive/cuad_finetune/data/chunks_df.parquet --batch-sizes 8 1 --smoke-text /content/my_contract.txt
-
-Then switch to a CPU runtime, re-run the cells above, and run the fp32 check (B2):
-
-    !python predict_check.py --precision fp32 --chunks-df /content/drive/MyDrive/cuad_finetune/data/chunks_df.parquet --smoke-text /content/my_contract.txt
+    CHUNKS = "--chunks-df /content/drive/MyDrive/cuad_finetune/data/chunks_df.parquet"
+    !python predict_check.py {CHUNKS} --batch-sizes 8 1 --smoke-text /content/my_contract.txt      # B1 + C
+    !python predict_check.py {CHUNKS} --exact-batching                                            # diagnostic
+    !python predict_check.py {CHUNKS} --precision fp32 --batch-sizes 8 1                          # GPU fp32 stability
+    !python predict_check.py {CHUNKS} --device cpu --precision fp32 --smoke-text /content/my_contract.txt  # B2 + C
 
 Local x64 Python 3.11-3.13 venv (CPU, so B2), from notebooks/:
 
     python predict_check.py --model-root C:/path/to/cuad_finetune/runs --smoke-text my_contract.txt
 
-If B fails, check in order: chunk ids (A), category order, tokenizer (the model folder's own tokenizer is compared
-below), sigmoid vs softmax, precision / attention implementation, transformers version (runs used 5.20.1).
+If B fails, check in this order: chunk ids (A), category order, tokenizer (the model folder's own tokenizer is
+compared below), sigmoid vs softmax, precision / attention implementation, transformers version (runs used 5.20.1).
 """
 
 from __future__ import annotations
@@ -70,10 +78,13 @@ REPO_DIR = predict.REPO_DIR
 TRAIN_JSON = REPO_DIR / "data" / "cuad" / "train_separate_questions.json"   # the file main_pipeline.ipynb chunked
 TEST_JSON = REPO_DIR / "data" / "cuad" / "test.json"                       # smoke test only: text, never labels
 RESULTS_DIR = REPO_DIR / "results"
-TOL_BF16 = 1e-3
-TOL_FP32 = 2e-2
+RUNS = predict.RUNS_ENSEMBLE
 N_CONTRACTS = 3
-TRAINED_WITH = {"torch": "2.11.0+cu130", "transformers": "5.20.1"}   # results/<run>/run_config.json
+MEAN_TOL = 1e-3
+MAX_TOL = 5e-2
+STRICT_MAX_TOL = 1e-3            # the issue's original target; reported only, for the exact-batching run
+TRAINING_EVAL_BATCH = 16         # modernbert_finetune.EVAL_BATCH_SIZE (not imported: that module pulls in Trainer/datasets)
+TRAINED_WITH = {"gpu": "A100", "torch": "2.11.0+cu130", "transformers": "5.20.1"}   # results/<run>/run_config.json
 
 
 class Report:
@@ -97,11 +108,11 @@ def load_contract_texts(path: Path) -> dict[str, str]:
     return texts
 
 
-def load_val_probs(runs) -> dict[str, pd.DataFrame]:
-    refs = {run: pd.read_parquet(RESULTS_DIR / run / "val_probs.parquet") for run in runs}
-    first = next(iter(refs.values()))
+def load_val_probs() -> dict[str, pd.DataFrame]:
+    refs = {run: pd.read_parquet(RESULTS_DIR / run / "val_probs.parquet") for run in RUNS}
+    first = refs[RUNS[0]]
     for run, df in refs.items():
-        assert df["chunk_id"].equals(first["chunk_id"]), f"{run}: val_probs rows differ from {runs[0]}"
+        assert df["chunk_id"].equals(first["chunk_id"]), f"{run}: val_probs rows differ from {RUNS[0]}"
     return refs
 
 
@@ -113,7 +124,7 @@ def pick_contracts(val_ref: pd.DataFrame, n: int = N_CONTRACTS) -> list[str]:
 
 
 def check_raw_offsets(report: Report, raw_text: str, chunks: pd.DataFrame, label: str):
-    """Approved decision 5: raw_text[raw_start:raw_end], cleaned again, has to give back the chunk text.
+    """raw_text[raw_start:raw_end], cleaned again, has to give back the chunk text.
     (The chunker strips chunk edges, so .strip() on chunk_text only matters if that ever changes.)"""
     bad = [row.chunk_id for row in chunks.itertuples(index=False)
            if clean_text_with_map(raw_text[row.raw_start:row.raw_end])[0] != row.chunk_text.strip()]
@@ -147,17 +158,65 @@ def check_chunks(report: Report, contracts, texts, val_ref, chunks_ref) -> dict[
     return out
 
 
-# --- B: probabilities ---
-def compare(new: np.ndarray, saved: np.ndarray, chunk_ids, categories) -> dict:
-    diff = np.abs(new.astype(np.float64) - saved.astype(np.float64))
+# --- B: comparing probabilities ---
+def diff_stats(new: np.ndarray, ref: np.ndarray, ids, categories) -> dict:
+    diff = np.abs(new.astype(np.float64) - ref.astype(np.float64))
     r, c = np.unravel_index(int(np.argmax(diff)), diff.shape)
-    per_cat = pd.Series(diff.max(axis=0), index=categories).sort_values(ascending=False)
-    return {"max": float(diff.max()), "mean": float(diff.mean()), "at": (chunk_ids[r], categories[c]),
-            "saved": float(saved[r, c]), "new": float(new[r, c]), "per_cat": per_cat}
+    return {"max": float(diff.max()), "mean": float(diff.mean()), "p99": float(np.percentile(diff, 99)),
+            "at": (ids[r], categories[c]), "ref": float(ref[r, c]), "new": float(new[r, c]),
+            "per_cat": pd.Series(diff.max(axis=0), index=categories).sort_values(ascending=False)}
+
+
+def compare(report: Report, ids, categories, new_by_run, ref_by_run, *, ref_name="saved", acceptance=True,
+            strict_max=False):
+    """Table of max / mean / p99 |diff| and yes/no flips, per run and for the ensemble (mean of the runs).
+    acceptance=True applies the acceptance rule; False only reports (used for batch-size stability)."""
+    cutoffs = predict.resolve_thresholds(None, categories, RUNS)
+    new_by_run = {**new_by_run, "ensemble_top2": np.mean([new_by_run[r] for r in RUNS], axis=0)}
+    ref_by_run = {**ref_by_run, "ensemble_top2": np.mean([ref_by_run[r] for r in RUNS], axis=0)}
+    stats = {label: diff_stats(new_by_run[label], ref_by_run[label], ids, categories) for label in new_by_run}
+
+    ens_new, ens_ref = new_by_run["ensemble_top2"], ref_by_run["ensemble_top2"]
+    flipped = (ens_new >= cutoffs) != (ens_ref >= cutoffs)
+    flips = [{"chunk_id": ids[r], "category": categories[c], f"prob_{ref_name}": float(ens_ref[r, c]),
+              "prob_new": float(ens_new[r, c]), "cutoff": float(cutoffs[c])} for r, c in zip(*np.nonzero(flipped))]
+
+    print(f"  {'':24s}{'max |diff|':>12s}{'mean |diff|':>13s}{'p99 |diff|':>12s}{'yes/no flips':>16s}")
+    for label, s in stats.items():
+        flip_col = f"{len(flips)} / {flipped.size}" if label == "ensemble_top2" else "-"
+        print(f"  {label:24s}{s['max']:12.2e}{s['mean']:13.1e}{s['p99']:12.1e}{flip_col:>16s}")
+    for label, s in stats.items():
+        print(f"  worst {label}: {s['at'][0]} / {s['at'][1]} ({ref_name} {s['ref']:.4f}, new {s['new']:.4f})")
+    print("  largest per-category max |diff| (ensemble): "
+          + ", ".join(f"{c} {v:.1e}" for c, v in stats["ensemble_top2"]["per_cat"].head(5).items()))
+    if flips:
+        print(pd.DataFrame(flips).to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+
+    if acceptance:
+        for label, s in stats.items():
+            report.check(s["mean"] <= MEAN_TOL and s["max"] <= MAX_TOL,
+                         f"{label}: mean |diff| {s['mean']:.1e} <= {MEAN_TOL:g} and max |diff| {s['max']:.2e} <= {MAX_TOL:g}")
+        report.check(not flips, f"ensemble yes/no at the selected cutoffs agrees on all {flipped.size} pairs",
+                     f"{len(flips)} flipped" if flips else "")
+    if strict_max:
+        for label, s in stats.items():
+            print(f"  (reported only) strict max |diff| <= {STRICT_MAX_TOL:g}, {label}: {s['max']:.2e} -> "
+                  f"{'within' if s['max'] <= STRICT_MAX_TOL else 'over'}")
+    return stats
+
+
+def saved_probs(val_refs, ids, categories) -> dict[str, np.ndarray]:
+    out = {}
+    for run in RUNS:
+        ref = val_refs[run]
+        if ref.columns[2:].tolist() != categories:
+            raise ValueError(f"{run}: model category order != val_probs column order -- outputs would be misaligned")
+        out[run] = ref.set_index("chunk_id").loc[ids, categories].to_numpy()
+    return out
 
 
 def check_tokenizer(report: Report, model_root, run: str, texts):
-    """Cause #3 in the plan: the base tokenizer (used for chunking and inference) vs. the copy saved with the model."""
+    """The base tokenizer (used for chunking and inference) vs. the copy saved with the model."""
     model_dir = predict.run_model_dir(predict.resolve_model_root(model_root), run)
     if not any((model_dir / f).exists() for f in ("tokenizer.json", "tokenizer_config.json")):
         print(f"  (no tokenizer saved in {model_dir}; skipping the tokenizer comparison)")
@@ -167,72 +226,73 @@ def check_tokenizer(report: Report, model_root, run: str, texts):
     report.check(same, f"base tokenizer == tokenizer saved with {run} on the checked chunks")
 
 
-def check_probs(report: Report, chunks_by_contract, val_refs, runs, model_root, device, precision, batch_size):
+def check_probs(report: Report, chunks_by_contract, val_refs, model_root, device, precision, batch_size):
     chunks = pd.concat(chunks_by_contract.values(), ignore_index=True)
     ids = chunks["chunk_id"].tolist()
-    start = time.time()
-    categories, new = predict.score_chunks(chunks["chunk_text"], model_root=model_root, runs=runs, device=device,
-                                           precision=precision, batch_size=batch_size)
-    seconds = time.time() - start
     used = predict.resolve_precision(precision, predict.resolve_device(device))
-    tol = TOL_BF16 if used == "bf16" else TOL_FP32
-    name = "B1" if used == "bf16" else "B2"
-    print(f"\n=== {name}. probabilities: {used} on {predict.resolve_device(device)}, batch size {batch_size}, "
-          f"{len(ids)} chunks x {len(runs)} run(s) in {seconds:.1f}s; tolerance {tol:g} ===")
+    predict.load_models(model_root, RUNS, device)      # load outside the timer
+    start = time.time()
+    categories, new = predict.score_chunks(chunks["chunk_text"], model_root=model_root, runs=RUNS, device=device,
+                                           precision=used, batch_size=batch_size)
+    seconds = time.time() - start
+    print(f"\n=== {'B1' if used == 'bf16' else 'B2'}. probabilities vs. saved: {used} on {predict.resolve_device(device)}, "
+          f"batch size {batch_size}, {len(ids)} chunks x {len(RUNS)} runs in {seconds:.1f}s ===")
+    saved = saved_probs(val_refs, ids, categories)              # raises if the category order differs
+    report.check(True, "model category order == val_probs column order")
+    compare(report, ids, categories, new, saved)
+    check_tokenizer(report, model_root, RUNS[0], chunks["chunk_text"])
+    return used, ids, categories, new
 
-    saved = {}
-    for run in runs:
-        ref = val_refs[run]
-        ref_cats = ref.columns[2:].tolist()
-        report.check(ref_cats == categories, f"{run}: model category order == val_probs column order")
-        saved[run] = ref.set_index("chunk_id").loc[ids, categories].to_numpy()
 
-    results = {run: compare(new[run], saved[run], ids, categories) for run in runs}
-    if set(runs) == set(predict.RUNS_ENSEMBLE):
-        ens_new = np.mean([new[r] for r in runs], axis=0)
-        ens_saved = np.mean([saved[r] for r in runs], axis=0)
-        results["ensemble_top2"] = compare(ens_new, ens_saved, ids, categories)
+# --- exact training batching (diagnostic) ---
+def val_chunk_texts(val_ref, texts, chunks_ref) -> tuple[list[str], str]:
+    """Chunk text for every val_probs row, in row order: training's chunks_df if given, else re-chunked here."""
+    ids = val_ref["chunk_id"].tolist()
+    if chunks_ref is not None:
+        lookup = chunks_ref.set_index("chunk_id")["chunk_text"]
+        source = "training's chunks_df"
     else:
-        ens_new = ens_saved = None
+        lookup = {}
+        for cid in dict.fromkeys(val_ref["contract_id"]):
+            chunks = predict.chunk_contract(texts[cid], contract_id=cid)
+            lookup.update(zip(chunks["chunk_id"], chunks["chunk_text"]))
+        source = "predict.chunk_contract"
+    missing = [i for i in ids if i not in lookup]
+    if missing:
+        raise ValueError(f"{len(missing)} val_probs chunks have no text in {source}, e.g. {missing[:3]}")
+    return [lookup[i] for i in ids], source
 
-    for label, res in results.items():
-        report.check(res["max"] <= tol, f"{label}: max |diff| {res['max']:.2e} <= {tol:g}",
-                     f"mean {res['mean']:.1e}; worst at {res['at'][0]} / {res['at'][1]} "
-                     f"(saved {res['saved']:.4f}, new {res['new']:.4f})")
-    worst = results[next(reversed(results))]["per_cat"].head(5)
-    print("  largest per-category max |diff| (" + next(reversed(results)) + "): "
-          + ", ".join(f"{c} {v:.1e}" for c, v in worst.items()))
 
-    if ens_new is not None:
-        cutoffs = predict.resolve_thresholds(None, categories, runs)
-        flips = (ens_new >= cutoffs) != (ens_saved >= cutoffs)
-        rows = [{"chunk_id": ids[r], "category": categories[c], "prob_saved": float(ens_saved[r, c]),
-                 "prob_new": float(ens_new[r, c]), "cutoff": float(cutoffs[c])} for r, c in zip(*np.nonzero(flips))]
-        label = f"ensemble yes/no at the selected cutoffs agrees on all {flips.size} pairs"
-        if used == "bf16":
-            print(f"  (info) {len(rows)} yes/no disagreement(s) at the cutoffs")
-        else:
-            report.check(not rows, label, f"{len(rows)} disagree" if rows else "")
-        if rows:
-            print(pd.DataFrame(rows).to_string(index=False, float_format=lambda x: f"{x:.4f}"))
-    check_tokenizer(report, model_root, runs[0], chunks["chunk_text"])
+def exact_batching(report: Report, val_refs, texts, chunks_ref, model_root, device):
+    val_ref = val_refs[RUNS[0]]
+    ids = val_ref["chunk_id"].tolist()
+    chunk_texts, source = val_chunk_texts(val_ref, texts, chunks_ref)
+    predict.load_models(model_root, RUNS, device)
+    start = time.time()
+    # precision="bf16" raises on CPU or a pre-Ampere GPU: this diagnostic only means something in bf16
+    categories, new = predict.score_chunks(chunk_texts, model_root=model_root, runs=RUNS, device=device,
+                                           precision="bf16", batch_size=TRAINING_EVAL_BATCH, sort_by_length=False)
+    print(f"\n=== exact training batching: all {len(ids)} val chunks in val_probs row order, batches of "
+          f"{TRAINING_EVAL_BATCH}, bf16 on {predict.resolve_device(device)}, no length sorting "
+          f"(text from {source}); {time.time() - start:.0f}s ===")
+    compare(report, ids, categories, new, saved_probs(val_refs, ids, categories), strict_max=True)
 
 
 # --- C: smoke test ---
-def smoke_test(report: Report, raw_text: str, contract_id: str, runs, model_root, device, precision, batch_size):
+def smoke_test(report: Report, raw_text: str, contract_id: str, model_root, device, precision, batch_size):
     print(f"\n=== C. smoke test on an unseen contract: {contract_id} ({len(raw_text):,} chars) ===")
     predict._load_model.cache_clear()            # time a cold load, as a fresh session would see it
     start = time.time()
-    predict.load_models(model_root, runs, device)
+    predict.load_models(model_root, RUNS, device)
     load_s = time.time() - start
 
     start = time.time()
-    pred = predict.predict_contract(raw_text, contract_id=contract_id, model_root=model_root, runs=runs,
+    pred = predict.predict_contract(raw_text, contract_id=contract_id, model_root=model_root, runs=RUNS,
                                     device=device, precision=precision, batch_size=batch_size)
     total_s = time.time() - start
     chunks = predict.chunk_contract(raw_text, contract_id)
     start = time.time()
-    predict.score_chunks(chunks["chunk_text"], model_root=model_root, runs=runs[:1], device=device,
+    predict.score_chunks(chunks["chunk_text"], model_root=model_root, runs=RUNS[:1], device=device,
                          precision=precision, batch_size=batch_size)
     single_s = time.time() - start
 
@@ -246,7 +306,7 @@ def smoke_test(report: Report, raw_text: str, contract_id: str, runs, model_root
     report.check(bool((pred["predicted"] == (pred["prob"] >= pred["threshold"])).all()), "predicted == prob >= threshold")
     check_raw_offsets(report, raw_text, chunks, contract_id)
 
-    print(f"  timing on {predict.resolve_device(device)}: model load {load_s:.1f}s ({len(runs)} run(s)); "
+    print(f"  timing on {predict.resolve_device(device)}: model load {load_s:.1f}s ({len(RUNS)} runs); "
           f"predict_contract {total_s:.1f}s ({total_s / n_chunks:.2f}s/chunk, ensemble incl. chunking); "
           f"one run, scoring only {single_s:.1f}s")
     rollup = predict.contract_rollup(pred)
@@ -264,22 +324,24 @@ def main():
     parser.add_argument("--batch-sizes", type=int, nargs="+", default=[predict.PREDICT_BATCH_SIZE])
     parser.add_argument("--precision", choices=predict.PRECISIONS, default="auto")
     parser.add_argument("--device", default=None)
-    parser.add_argument("--skip-probs", action="store_true", help="check A only (no model weights needed)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--skip-probs", action="store_true", help="check A only (no model weights needed)")
+    mode.add_argument("--exact-batching", action="store_true",
+                      help="A + all val chunks in training's batches (bf16, 16 per batch, row order); skips B and C")
     smoke = parser.add_mutually_exclusive_group()
     smoke.add_argument("--smoke-text", type=Path, default=None, help="unseen contract as a UTF-8 .txt (preferred)")
     smoke.add_argument("--smoke-test-json", type=int, default=None, metavar="N",
                        help="use the text of test.json contract N (text only: no labels, no metrics)")
     args = parser.parse_args()
 
-    runs = predict.RUNS_ENSEMBLE
     device = str(predict.resolve_device(args.device))
-    print(f"torch {torch.__version__}, transformers {transformers.__version__} (runs trained with "
-          f"{TRAINED_WITH['torch']} / {TRAINED_WITH['transformers']}); device {device}"
-          + (f" ({torch.cuda.get_device_name(0)})" if device.startswith("cuda") else ""))
+    print(f"torch {torch.__version__}, transformers {transformers.__version__}; device {device}"
+          + (f" ({torch.cuda.get_device_name(0)})" if device.startswith("cuda") else "")
+          + f". Runs trained/predicted on {TRAINED_WITH['gpu']} with {TRAINED_WITH['torch']} / {TRAINED_WITH['transformers']}")
 
     report = Report()
-    val_refs = load_val_probs(runs)
-    val_ref = val_refs[runs[0]]
+    val_refs = load_val_probs()
+    val_ref = val_refs[RUNS[0]]
     contracts = args.contracts or pick_contracts(val_ref)
     val_ids = set(load_splits()["val"])
     not_val = [c for c in contracts if c not in val_ids]
@@ -291,16 +353,29 @@ def main():
     chunks_ref = pd.read_parquet(args.chunks_df) if args.chunks_df else None
     chunks_by_contract = check_chunks(report, contracts, texts, val_ref, chunks_ref)
 
-    if not args.skip_probs:
+    if args.exact_batching:
+        exact_batching(report, val_refs, texts, chunks_ref, args.model_root, device)
+        if args.smoke_text is not None or args.smoke_test_json is not None:
+            print("\n(--exact-batching runs A + the diagnostic only: smoke test C skipped)")
+    elif not args.skip_probs:
+        runs_by_batch = {}
         for batch_size in args.batch_sizes:
-            check_probs(report, chunks_by_contract, val_refs, runs, args.model_root, device, args.precision, batch_size)
+            used, ids, categories, new = check_probs(report, chunks_by_contract, val_refs, args.model_root, device,
+                                                     args.precision, batch_size)
+            runs_by_batch[batch_size] = new
+        base = args.batch_sizes[0]
+        for other in args.batch_sizes[1:]:
+            print(f"\n=== batch-size stability ({used} on {device}): batch {other} vs. batch {base}, "
+                  f"same {len(ids)} chunks (reported only) ===")
+            compare(report, ids, categories, runs_by_batch[other], runs_by_batch[base],
+                    ref_name=f"batch{base}", acceptance=False)
 
         if args.smoke_text is not None:
-            smoke_test(report, args.smoke_text.read_text(encoding="utf-8"), args.smoke_text.stem, runs,
-                       args.model_root, device, args.precision, args.batch_sizes[0])
+            smoke_test(report, args.smoke_text.read_text(encoding="utf-8"), args.smoke_text.stem,
+                       args.model_root, device, args.precision, base)
         elif args.smoke_test_json is not None:
             title, text = list(load_contract_texts(TEST_JSON).items())[args.smoke_test_json]
-            smoke_test(report, text, title, runs, args.model_root, device, args.precision, args.batch_sizes[0])
+            smoke_test(report, text, title, args.model_root, device, args.precision, base)
         else:
             print("\n(no --smoke-text / --smoke-test-json given: smoke test C skipped)")
 

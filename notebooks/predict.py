@@ -41,9 +41,10 @@ Local (x64 Python 3.11-3.13 venv with requirements.txt installed), from notebook
     # or set CUAD_MODEL_ROOT once ($env:CUAD_MODEL_ROOT = "..." in PowerShell, export in bash) and drop --model-root
 
 Precision: on an Ampere-or-newer GPU (A100, L4) the forward pass runs under bf16 autocast, the same as
-trainer.predict when results/<run>/val_probs.parquet were written, so it reproduces those to ~1e-3. On CPU
-(or a T4) it runs in fp32, which differs from the bf16-made probabilities by up to ~1e-2.
-predict_check.py checks both.
+trainer.predict when results/<run>/val_probs.parquet were written. On CPU (or a T4) it runs in fp32. On the
+checked validation contracts, both agree with the saved probabilities to a mean abs difference of ~1e-4 and a max
+of a few 1e-2, with no yes/no changes at the cutoffs. In bf16, batch composition alone moves results that much.
+predict_check.py checks this.
 """
 
 from __future__ import annotations
@@ -261,12 +262,16 @@ def _autocast(precision: str):
 
 
 def score_chunks(chunk_texts: Sequence[str], *, model_root=None, runs: Sequence[str] = RUNS_ENSEMBLE, device=None,
-                 precision: str = "auto", batch_size: int = PREDICT_BATCH_SIZE):
+                 precision: str = "auto", batch_size: int = PREDICT_BATCH_SIZE, sort_by_length: bool = True):
     """-> (categories, {run: float32 array (n_chunks, 41)}), rows in input order.
 
     Tokenized like training (modernbert_tokenizer_pipeline.tokenize_dataset: [CLS]/[SEP] on, no truncation,
     raise if over 768 tokens) and padded per batch with tokenizer.pad, which is what DataCollatorWithPadding does.
-    probability = sigmoid of the fp32 logits, per category, as in modernbert_finetune.py."""
+    probability = sigmoid of the fp32 logits, per category, as in modernbert_finetune.py.
+
+    sort_by_length=False batches the chunks in the order given, which is what trainer.predict did (sequential, 16 per
+    batch). predict_check.py --exact-batching uses it to repeat training's exact batches. In bf16, batch composition
+    alone moves some probabilities by a few 1e-2 (issue #31 check results)."""
     device = resolve_device(device)
     precision = resolve_precision(precision, device)
     categories, models = load_models(model_root, runs, device)
@@ -280,9 +285,9 @@ def score_chunks(chunk_texts: Sequence[str], *, model_root=None, runs: Sequence[
         raise ValueError(f"{len(too_long)} chunk(s) exceed ModernBERT's {MAX_LENGTH}-token input "
                          f"(longest {max(lengths)}) -- the chunker config drifted from training")
 
-    # longest first, so each batch pads to a similar length. Pad positions are masked out, so batching only
-    # changes results at the float-noise level (predict_check.py compares batch sizes 8 and 1 to confirm)
-    order = sorted(range(len(texts)), key=lambda i: -lengths[i])
+    # longest first, so each batch pads to a similar length (less padding = faster). Pad positions are masked out,
+    # but batch composition still shifts results by float noise, which is much larger in bf16 than in fp32
+    order = sorted(range(len(texts)), key=lambda i: -lengths[i]) if sort_by_length else list(range(len(texts)))
     probs = {run: np.empty((len(texts), len(categories)), dtype=np.float32) for run in models}
     with torch.inference_mode():
         for b in range(0, len(order), batch_size):
