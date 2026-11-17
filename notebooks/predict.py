@@ -42,7 +42,7 @@ Local (x64 Python 3.11-3.13 venv with requirements.txt installed), from notebook
 
 Precision: fp32 by default on every device (team decision, issue #31). In fp32 the output doesn't depend on batch
 size (batch 1 vs 8: max abs difference 5.6e-6) or on GPU vs CPU. bf16 autocast (precision="bf16", Ampere-or-newer
-GPUs only) is about 2.6x faster on an L4 and fine for bulk scoring, but batch composition alone moves its
+GPUs only) is about 2.2-2.6x faster on an L4 and fine for bulk scoring, but batch composition alone moves its
 probabilities by up to ~5e-2. precision="auto" means bf16 where the GPU supports it and fp32 otherwise. That's how
 results/<run>/val_probs.parquet were made, so predict_check.py uses it to reproduce them. Against those saved
 probabilities, both precisions agree to a mean abs difference of ~1e-4, with no yes/no changes at the cutoffs.
@@ -359,7 +359,7 @@ def main():
     parser.add_argument("--threshold", type=float, default=None,
                         help="one cutoff for every category (required when --runs isn't the ensemble)")
     parser.add_argument("--precision", choices=PRECISIONS, default=DEFAULT_PRECISION,
-                        help="fp32 (default): same output on any device or batch size; bf16: ~2.6x faster on an "
+                        help="fp32 (default): same output on any device or batch size; bf16: ~2.2-2.6x faster on an "
                              "Ampere+ GPU for bulk scoring, output moves up to ~5e-2 with batching; auto: bf16 if supported")
     parser.add_argument("--device", default=None, help="cpu or cuda; default cuda if available")
     parser.add_argument("--batch-size", type=int, default=PREDICT_BATCH_SIZE)
