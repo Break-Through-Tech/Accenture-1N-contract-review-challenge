@@ -114,3 +114,51 @@ summary, per_category = multilabel_metrics(labels.loc[probs["chunk_id"], cats].t
   than its saved predictions.
 - **To reproduce a run:** open `notebooks/modernbert_finetune_colab.ipynb` in Colab and use the
   run's option from the table above.
+
+## Evidence span extraction (issue #32)
+
+The chunk classifier predicts a category for a roughly 750-token passage; it does not produce
+sentence-level confidence or exact evidence offsets. `notebooks/evidence_span_extraction.py`
+localizes predictions with category-specific regex cues, selecting matching sentences from each
+positive chunk. If no cue matches, it retains the longest sentence and marks it as a fallback.
+Reported `prob` is the originating chunk's ensemble probability, not a sentence/span score. Treat
+these spans as review candidates.
+
+The script averages `modernbert_v2_biasinit` and `modernbert_v1_6ep` validation probabilities and
+uses the `threshold_ensemble_top2` per-category cutoffs in `error_analysis/selected_thresholds.csv`
+(selected on tune). It maps sentence positions to `contracts_df.text`, merges overlapping
+same-contract/category hits by character offset, then compares against deduplicated
+`chunk_evidence_df.parquet` gold spans. The overlap rate is the fraction of extracted predictions
+whose half-open character interval intersects at least one gold span for the same contract and
+category. Gold-span coverage is reported as the fraction of deduplicated gold spans intersected by
+at least one prediction.
+
+After generating the processed parquet files with `notebooks/main_pipeline.ipynb` and the selected
+threshold file with `notebooks/error_analysis.ipynb`, run from the repository root:
+
+```powershell
+python notebooks/evidence_span_extraction.py --approach regex
+python notebooks/evidence_span_extraction.py --approach scored
+python -m unittest discover -s notebooks -p "test_evidence_span_extraction.py"
+```
+
+By default, the script evaluates all 82 validation contracts. Results are saved to
+`results/evidence_span_extraction/<approach>/predictions.csv` and `summary.json`. The generated
+`data/processed/` parquet files are not tracked in the repository and must be available locally
+before evaluation.
+
+### Validation comparison
+
+Both approaches were run on the same 82 validation contracts with identical ensemble probabilities,
+tune-selected category thresholds, and interval-overlap metric:
+
+| Sentence selection | Predictions | Predictions overlapping gold | Prediction overlap rate | Gold spans covered | Gold coverage | Fallback predictions |
+|---|---:|---:|---:|---:|---:|---:|
+| Regex: retain every sentence matching a category cue | 2,770 | 898 | 32.42% | 958 / 2,270 | 42.20% | 989 |
+| Scored: retain sentence(s) matching the most distinct category cues | 2,603 | 851 | 32.69% | 916 / 2,270 | 40.35% | 989 |
+
+Regex retained 42 more gold spans, while cue scoring had a slightly higher prediction overlap rate
+and emitted 167 fewer predictions. The regex variant is the default because it achieved higher
+gold-span coverage; neither baseline is a trained span extractor. Fallback sentences are retained
+when no category cue matches, so reviewers should inspect `method` and treat all extracted text as
+candidate evidence rather than a legal conclusion. The probability column remains chunk-level.
